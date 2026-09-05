@@ -105,3 +105,8 @@ $RECYCLE.BIN/
 wads/*.wad
 wads/*.WAD
 !wads/README.md
+
+# --- NVIDIA NGX SDK and runtime (local copies only) ---
+/third_party/ngx/
+nvngx*.dll
+nvsdk_ngx*
