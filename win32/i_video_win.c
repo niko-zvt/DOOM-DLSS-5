@@ -46,6 +46,12 @@ static ID3D12Resource *g_tex_color;
 static ID3D12Resource *g_tex_depth;
 static ID3D12Resource *g_tex_normal;
 static ID3D12Resource *g_tex_velocity;
+static ID3D12Resource *g_tex_out;
+static D3D12_RESOURCE_STATES g_st_color;
+static D3D12_RESOURCE_STATES g_st_depth;
+static D3D12_RESOURCE_STATES g_st_normal;
+static D3D12_RESOURCE_STATES g_st_velocity;
+static D3D12_RESOURCE_STATES g_st_out;
 static ID3D12Resource *g_up_color;
 static ID3D12Resource *g_up_depth;
 static ID3D12Resource *g_up_normal;
@@ -244,6 +250,8 @@ static void barrier(ID3D12Resource *res, D3D12_RESOURCE_STATES *cur,
 }
 
 static ID3D12Resource *make_tex(UINT w, UINT h, DXGI_FORMAT fmt,
+				D3D12_RESOURCE_FLAGS flags,
+				D3D12_RESOURCE_STATES state,
 				const wchar_t *name)
 {
     D3D12_HEAP_PROPERTIES heap;
@@ -261,10 +269,10 @@ static ID3D12Resource *make_tex(UINT w, UINT h, DXGI_FORMAT fmt,
     desc.Format = fmt;
     desc.SampleDesc.Count = 1;
     desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    desc.Flags = flags;
     if (FAILED(ID3D12Device_CreateCommittedResource(
 	    g_dev, &heap, D3D12_HEAP_FLAG_NONE, &desc,
-	    D3D12_RESOURCE_STATE_COPY_DEST, NULL,
+	    state, NULL,
 	    &IID_ID3D12Resource, (void **)&res)))
 	return NULL;
     if (name)
@@ -426,20 +434,28 @@ static void init_d3d(HWND hwnd)
 	g_bb_state[i] = D3D12_RESOURCE_STATE_PRESENT;
     }
 
+    g_st_color = g_st_depth = g_st_normal = g_st_velocity =
+	D3D12_RESOURCE_STATE_COPY_DEST;
+    g_st_out = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     g_tex_color = make_tex(GB_WIDTH, GB_HEIGHT, DXGI_FORMAT_R8G8B8A8_UNORM,
-			   L"GB_Color");
+			   D3D12_RESOURCE_FLAG_NONE, g_st_color, L"GB_Color");
     g_tex_depth = make_tex(GB_WIDTH, GB_HEIGHT, DXGI_FORMAT_R32_FLOAT,
-			   L"GB_Depth");
+			   D3D12_RESOURCE_FLAG_NONE, g_st_depth, L"GB_Depth");
     g_tex_normal = make_tex(GB_WIDTH, GB_HEIGHT, DXGI_FORMAT_R8G8B8A8_UNORM,
-			    L"GB_Normal");
+			    D3D12_RESOURCE_FLAG_NONE, g_st_normal, L"GB_Normal");
     g_tex_velocity = make_tex(GB_WIDTH, GB_HEIGHT, DXGI_FORMAT_R32G32_FLOAT,
+			      D3D12_RESOURCE_FLAG_NONE, g_st_velocity,
 			      L"GB_Velocity");
+    g_tex_out = make_tex(WIN_W, WIN_H, DXGI_FORMAT_B8G8R8A8_UNORM,
+			 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+			 g_st_out, L"GB_Output");
     g_up_color = make_upload(upload_bytes(GB_WIDTH, GB_HEIGHT, 4));
     g_up_depth = make_upload(upload_bytes(GB_WIDTH, GB_HEIGHT, 4));
     g_up_normal = make_upload(upload_bytes(GB_WIDTH, GB_HEIGHT, 4));
     g_up_velocity = make_upload(upload_bytes(GB_WIDTH, GB_HEIGHT, 8));
     g_up_present = make_upload(upload_bytes(WIN_W, WIN_H, 4));
     if (!g_tex_color || !g_tex_depth || !g_tex_normal || !g_tex_velocity ||
+	!g_tex_out ||
 	!g_up_color || !g_up_depth || !g_up_normal || !g_up_velocity ||
 	!g_up_present)
 	I_Error("G-buffer textures failed");
@@ -491,16 +507,22 @@ void I_FinishUpdate(void)
 {
     UINT idx;
     ID3D12CommandList *lists[1];
+    int used_ngx = 0;
+    int reset;
 
     GB_ConvertColor(screens[0]);
     GB_EndFrame();
-    GB_ComposePresent(g_present, WIN_W, WIN_H);
+    reset = GB_ConsumeReset();
 
     wait_gpu();
     idx = IDXGISwapChain3_GetCurrentBackBufferIndex(g_swap);
     ID3D12CommandAllocator_Reset(g_alloc);
     ID3D12GraphicsCommandList_Reset(g_cmd, g_alloc, NULL);
 
+    barrier(g_tex_color, &g_st_color, D3D12_RESOURCE_STATE_COPY_DEST);
+    barrier(g_tex_depth, &g_st_depth, D3D12_RESOURCE_STATE_COPY_DEST);
+    barrier(g_tex_normal, &g_st_normal, D3D12_RESOURCE_STATE_COPY_DEST);
+    barrier(g_tex_velocity, &g_st_velocity, D3D12_RESOURCE_STATE_COPY_DEST);
     upload_tex(g_tex_color, g_up_color, GB_ColorRGBA(),
 	       GB_WIDTH, GB_HEIGHT, 4, DXGI_FORMAT_R8G8B8A8_UNORM);
     upload_tex(g_tex_depth, g_up_depth, GB_Depth(),
@@ -510,9 +532,41 @@ void I_FinishUpdate(void)
     upload_tex(g_tex_velocity, g_up_velocity, GB_VelocityRG(),
 	       GB_WIDTH, GB_HEIGHT, 8, DXGI_FORMAT_R32G32_FLOAT);
 
+    if (Ngx_Ready() && GB_GetDebugView() == GB_VIEW_COLOR)
+    {
+	barrier(g_tex_color, &g_st_color,
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	barrier(g_tex_depth, &g_st_depth,
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	barrier(g_tex_velocity, &g_st_velocity,
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	used_ngx = Ngx_Evaluate(g_cmd, g_tex_color, g_tex_depth,
+				g_tex_velocity, g_tex_out, reset);
+    }
+
     barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_COPY_DEST);
-    upload_tex(g_bb[idx], g_up_present, g_present,
-	       WIN_W, WIN_H, 4, DXGI_FORMAT_B8G8R8A8_UNORM);
+    if (used_ngx)
+    {
+	D3D12_TEXTURE_COPY_LOCATION dst_loc;
+	D3D12_TEXTURE_COPY_LOCATION src_loc;
+
+	barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_COPY_SOURCE);
+	memset(&dst_loc, 0, sizeof(dst_loc));
+	dst_loc.pResource = g_bb[idx];
+	dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	memset(&src_loc, 0, sizeof(src_loc));
+	src_loc.pResource = g_tex_out;
+	src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	ID3D12GraphicsCommandList_CopyTextureRegion(g_cmd, &dst_loc, 0, 0, 0,
+						    &src_loc, NULL);
+    }
+    else
+    {
+	GB_ComposePresent(g_present, WIN_W, WIN_H);
+	upload_tex(g_bb[idx], g_up_present, g_present,
+		   WIN_W, WIN_H, 4, DXGI_FORMAT_B8G8R8A8_UNORM);
+    }
     barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_PRESENT);
 
     ID3D12GraphicsCommandList_Close(g_cmd);
@@ -553,6 +607,7 @@ void I_ShutdownGraphics(void)
     if (g_up_normal) ID3D12Resource_Release(g_up_normal);
     if (g_up_depth) ID3D12Resource_Release(g_up_depth);
     if (g_up_color) ID3D12Resource_Release(g_up_color);
+    if (g_tex_out) ID3D12Resource_Release(g_tex_out);
     if (g_tex_velocity) ID3D12Resource_Release(g_tex_velocity);
     if (g_tex_normal) ID3D12Resource_Release(g_tex_normal);
     if (g_tex_depth) ID3D12Resource_Release(g_tex_depth);
@@ -567,7 +622,7 @@ void I_ShutdownGraphics(void)
     if (g_fence_ev) CloseHandle(g_fence_ev);
     if (g_dev) ID3D12Device_Release(g_dev);
     g_up_present = g_up_velocity = g_up_normal = g_up_depth = g_up_color = NULL;
-    g_tex_velocity = g_tex_normal = g_tex_depth = g_tex_color = NULL;
+    g_tex_out = g_tex_velocity = g_tex_normal = g_tex_depth = g_tex_color = NULL;
     g_bb[0] = g_bb[1] = NULL;
     g_swap = NULL;
     g_cmd = NULL;
