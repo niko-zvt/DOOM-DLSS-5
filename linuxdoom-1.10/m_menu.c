@@ -1079,7 +1079,7 @@ int     quitsounds2[8] =
 
 void M_QuitResponse(int ch)
 {
-    if (ch != 'y')
+    if (ch != 'y' && ch != 'Y')
 	return;
     if (!netgame)
     {
@@ -1495,7 +1495,8 @@ boolean M_Responder (event_t* ev)
     if (messageToPrint)
     {
 	if (messageNeedsInput == true &&
-	    !(ch == ' ' || ch == 'n' || ch == 'y' || ch == KEY_ESCAPE))
+	    !(ch == ' ' || ch == 'n' || ch == 'N' || ch == 'y' || ch == 'Y'
+	      || ch == KEY_ESCAPE))
 	    return false;
 		
 	menuactive = messageLastMenuActive;
