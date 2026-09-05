@@ -1,0 +1,107 @@
+# --- Build trees ---
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+/linux/
+/linuxdoom-1.10/linux/
+/sndserv/linux/
+
+# --- CMake / Visual Studio ---
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CMakeUserPresets.json
+CMakeSettings.json
+compile_commands.json
+CTestTestfile.cmake
+*.sln
+*.slnx
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.suo
+*.user
+*.userosscache
+*.aps
+*.ncb
+*.opensdf
+*.sdf
+*.cachefile
+*.VC.db
+*.VC.opendb
+.vs/
+ipch/
+[Dd]ebug/
+[Rr]elease/
+/x64/
+.idea/
+.vscode/
+*.code-workspace
+
+# --- Objects and binaries ---
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.exp
+*.ilk
+*.pdb
+*.idb
+*.iobj
+*.ipdb
+*.exe
+*.out
+*.app
+*.elf
+*.map
+*.res
+
+# Linux/WSL leftover binaries (not source)
+linuxdoom-1.10/sndserver
+sndserv/sndserver
+sndserv/linux/sndserver
+
+# --- Linux doom leftovers ---
+*~
+*.flc
+*.orig
+*.rej
+*.bak
+*.tmp
+*.swp
+*.swo
+
+# --- Runtime / user config (do not commit) ---
+.doomrc
+.doomrc.bak
+default.cfg
+*.cfg
+!sndserv/**/*.cfg
+windoom-trace.txt
+debug*.txt
+*.log
+
+# --- Debugger / crash dumps ---
+*.dmp
+*.mdmp
+cdb.script
+
+# --- OS junk ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+.Spotlight-V100
+.Trashes
+
+# --- Game data (IWAD/PWAD, keep local in /wads) ---
+*.wad
+*.WAD
+wads/*.wad
+wads/*.WAD
+!wads/README.md
