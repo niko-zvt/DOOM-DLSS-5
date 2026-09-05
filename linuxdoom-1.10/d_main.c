@@ -38,6 +38,7 @@ static const char rcsid[] = "$Id: d_main.c,v 1.8 1997/02/03 22:45:09 b1 Exp $";
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <strings.h>
 #endif
 
 
@@ -554,6 +555,35 @@ void D_AddFile (char *file)
     wadfiles[numwadfiles] = newfile;
 }
 
+static int wad_basename_is(const char *path, const char *name)
+{
+    const char *base = path;
+    const char *p;
+
+    for (p = path; *p; p++)
+	if (*p == '/' || *p == '\\')
+	    base = p + 1;
+    return !strcasecmp(base, name);
+}
+
+static GameMode_t GameModeForWad(const char *path)
+{
+    if (wad_basename_is(path, "freedoom2.wad")
+	|| wad_basename_is(path, "doom2.wad")
+	|| wad_basename_is(path, "doom2f.wad")
+	|| wad_basename_is(path, "plutonia.wad")
+	|| wad_basename_is(path, "tnt.wad"))
+	return commercial;
+    if (wad_basename_is(path, "freedoom1.wad")
+	|| wad_basename_is(path, "doomu.wad"))
+	return retail;
+    if (wad_basename_is(path, "doom.wad"))
+	return registered;
+    if (wad_basename_is(path, "doom1.wad"))
+	return shareware;
+    return retail;
+}
+
 //
 // IdentifyVersion
 // Checks availability of IWAD files by name,
@@ -571,10 +601,13 @@ void IdentifyVersion (void)
     char*	doom2fwad;
     char*	plutoniawad;
     char*	tntwad;
+    char*	freedoom1wad;
+    char*	freedoom2wad;
 
 #ifdef NORMALUNIX
     char *home;
     char *doomwaddir;
+    int p;
     doomwaddir = getenv("DOOMWADDIR");
     if (!doomwaddir)
 	doomwaddir = ".";
@@ -608,10 +641,24 @@ void IdentifyVersion (void)
     doom2fwad = malloc(strlen(doomwaddir)+1+10+1);
     sprintf(doom2fwad, "%s/doom2f.wad", doomwaddir);
 
+    freedoom1wad = malloc(strlen(doomwaddir)+1+13+1);
+    sprintf(freedoom1wad, "%s/freedoom1.wad", doomwaddir);
+
+    freedoom2wad = malloc(strlen(doomwaddir)+1+13+1);
+    sprintf(freedoom2wad, "%s/freedoom2.wad", doomwaddir);
+
     home = getenv("HOME");
     if (!home)
       I_Error("Please set $HOME to your home directory");
     sprintf(basedefault, "%s/.doomrc", home);
+
+    p = M_CheckParm ("-iwad");
+    if (p && p < myargc-1)
+    {
+	gamemode = GameModeForWad(myargv[p+1]);
+	D_AddFile (myargv[p+1]);
+	return;
+    }
 #endif
 
     if (M_CheckParm ("-shdev"))
@@ -663,6 +710,20 @@ void IdentifyVersion (void)
 	language = french;
 	printf("French version\n");
 	D_AddFile (doom2fwad);
+	return;
+    }
+
+    if ( !access (freedoom2wad,R_OK) )
+    {
+	gamemode = commercial;
+	D_AddFile (freedoom2wad);
+	return;
+    }
+
+    if ( !access (freedoom1wad,R_OK) )
+    {
+	gamemode = retail;
+	D_AddFile (freedoom1wad);
 	return;
     }
 
