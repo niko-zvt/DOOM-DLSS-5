@@ -10,6 +10,7 @@
 #define COBJMACROS
 #include <windows.h>
 #include <wchar.h>
+#include <string.h>
 #include <d3d12.h>
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_defs.h>
@@ -116,12 +117,86 @@ static void ngx_log_optimal(void)
 	    opt_w, opt_h, min_w, min_h, max_w, max_h);
 }
 
+static int ngx_create_feature(ID3D12CommandQueue *queue)
+{
+    NVSDK_NGX_DLSS_Create_Params create;
+    ID3D12CommandAllocator *alloc = NULL;
+    ID3D12GraphicsCommandList *cl = NULL;
+    ID3D12Fence *fence = NULL;
+    HANDLE ev = NULL;
+    ID3D12CommandList *lists[1];
+    NVSDK_NGX_Result r;
+    HRESULT hr;
+    int ok = 0;
+
+    if (!queue || !g_params || !g_dev)
+	return 0;
+
+    memset(&create, 0, sizeof(create));
+    create.Feature.InWidth = 320;
+    create.Feature.InHeight = 200;
+    create.Feature.InTargetWidth = 1280;
+    create.Feature.InTargetHeight = 800;
+    create.Feature.InPerfQualityValue =
+	NVSDK_NGX_PerfQuality_Value_UltraPerformance;
+    create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
+				  NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+
+    hr = ID3D12Device_CreateCommandAllocator(g_dev,
+		D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator,
+		(void **)&alloc);
+    if (FAILED(hr))
+	goto done;
+    hr = ID3D12Device_CreateCommandList(g_dev, 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+		alloc, NULL, &IID_ID3D12GraphicsCommandList, (void **)&cl);
+    if (FAILED(hr))
+	goto done;
+    hr = ID3D12Device_CreateFence(g_dev, 0, D3D12_FENCE_FLAG_NONE,
+		&IID_ID3D12Fence, (void **)&fence);
+    if (FAILED(hr))
+	goto done;
+    ev = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (!ev)
+	goto done;
+
+    r = NGX_D3D12_CREATE_DLSS_EXT(cl, 1, 1, &g_handle, g_params, &create);
+    ID3D12GraphicsCommandList_Close(cl);
+    if (NVSDK_NGX_FAILED(r) || !g_handle)
+    {
+	fprintf(stderr, "NGX: CREATE_DLSS_EXT failed (0x%08x %ls)\n",
+		(unsigned)r, GetNGXResultAsString(r));
+	g_handle = NULL;
+	goto done;
+    }
+
+    lists[0] = (ID3D12CommandList *)cl;
+    ID3D12CommandQueue_ExecuteCommandLists(queue, 1, lists);
+    if (FAILED(ID3D12CommandQueue_Signal(queue, fence, 1)))
+	goto done;
+    if (ID3D12Fence_GetCompletedValue(fence) < 1)
+    {
+	ID3D12Fence_SetEventOnCompletion(fence, 1, ev);
+	WaitForSingleObject(ev, INFINITE);
+    }
+    ok = 1;
+
+done:
+    if (ev)
+	CloseHandle(ev);
+    if (fence)
+	ID3D12Fence_Release(fence);
+    if (cl)
+	ID3D12GraphicsCommandList_Release(cl);
+    if (alloc)
+	ID3D12CommandAllocator_Release(alloc);
+    return ok;
+}
+
 int Ngx_Init(void *device, void *queue)
 {
     NVSDK_NGX_Result r;
     wchar_t path[MAX_PATH];
 
-    (void)queue;
     g_inited = 0;
     g_handle = NULL;
     g_params = NULL;
@@ -162,7 +237,13 @@ int Ngx_Init(void *device, void *queue)
     }
     ngx_log_optimal();
 
-    fprintf(stderr, "NGX: runtime ready (feature created on first evaluate)\n");
+    if (!ngx_create_feature((ID3D12CommandQueue *)queue))
+    {
+	ngx_teardown();
+	return 0;
+    }
+
+    fprintf(stderr, "NGX: DLSS feature ready\n");
     g_inited = 1;
     return 1;
 }
@@ -174,41 +255,7 @@ void Ngx_Shutdown(void)
 
 int Ngx_Ready(void)
 {
-    return g_inited;
-}
-
-static int ngx_ensure_feature(ID3D12GraphicsCommandList *cl)
-{
-    NVSDK_NGX_Result r;
-    int flags;
-
-    if (g_handle)
-	return 1;
-    if (!g_params || !cl)
-	return 0;
-
-    flags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
-	    NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
-
-    NVSDK_NGX_Parameter_SetUI(g_params, NVSDK_NGX_Parameter_Width, 320);
-    NVSDK_NGX_Parameter_SetUI(g_params, NVSDK_NGX_Parameter_Height, 200);
-    NVSDK_NGX_Parameter_SetUI(g_params, NVSDK_NGX_Parameter_OutWidth, 1280);
-    NVSDK_NGX_Parameter_SetUI(g_params, NVSDK_NGX_Parameter_OutHeight, 800);
-    NVSDK_NGX_Parameter_SetI(g_params, NVSDK_NGX_Parameter_PerfQualityValue,
-			     NVSDK_NGX_PerfQuality_Value_UltraPerformance);
-    NVSDK_NGX_Parameter_SetI(g_params, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
-			     flags);
-
-    r = NVSDK_NGX_D3D12_CreateFeature(cl, NVSDK_NGX_Feature_SuperSampling,
-				      g_params, &g_handle);
-    if (NVSDK_NGX_FAILED(r) || !g_handle)
-    {
-	fprintf(stderr, "NGX: CreateFeature failed (0x%08x)\n", (unsigned)r);
-	g_handle = NULL;
-	g_inited = 0;
-	return 0;
-    }
-    return 1;
+    return g_handle != NULL;
 }
 
 int Ngx_Evaluate(void *cmdlist, void *color, void *depth, void *velocity,
@@ -217,9 +264,7 @@ int Ngx_Evaluate(void *cmdlist, void *color, void *depth, void *velocity,
     ID3D12GraphicsCommandList *cl = (ID3D12GraphicsCommandList *)cmdlist;
     NVSDK_NGX_Result r;
 
-    if (!g_inited || !cl || !color || !depth || !velocity || !output)
-	return 0;
-    if (!ngx_ensure_feature(cl))
+    if (!g_handle || !cl || !color || !depth || !velocity || !output)
 	return 0;
 
     NVSDK_NGX_Parameter_SetD3d12Resource(g_params, NVSDK_NGX_Parameter_Color,
