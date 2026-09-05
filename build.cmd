@@ -16,8 +16,8 @@ shift
 goto parse
 
 :usage
-echo build.cmd            GPLv2 build, nearest present, no NVIDIA SDK
-echo build.cmd --dlss-on  fetch NVIDIA/DLSS into third_party\ngx and link NGX
+echo .\build.cmd            GPLv2 build, nearest present, no NVIDIA SDK
+echo .\build.cmd --dlss-on  fetch NVIDIA/DLSS into third_party\ngx and link NGX
 echo.
 echo NVIDIA files stay out of git. See win32\README-NGX.md
 exit /b 0

@@ -12,11 +12,12 @@ Carmack's old note is in README.TXT.
 
 ## Build
 
-    build.cmd
+    .\build.cmd
 
-GPLv2 only: nearest present, no NVIDIA SDK.
+GPLv2 only: nearest present, no NVIDIA SDK. In PowerShell use `.\`
+(cmd.exe can run `build.cmd` as-is).
 
-    build.cmd --dlss-on
+    .\build.cmd --dlss-on
 
 Downloads NVIDIA/DLSS into gitignored `third_party/ngx/`, links NGX,
 copies `nvngx_dlss.dll` next to the exe. Details: `win32/README-NGX.md`.
@@ -30,13 +31,13 @@ Or cmake by hand:
 
 Put an IWAD in `wads/` (`freedoom2.wad`, `doom2.wad`, etc.), then:
 
-    play-windoom.cmd
+    .\play-windoom.cmd
 
 The script starts `windoom.exe` from its own folder so `nvngx_dlss.dll`
 next to the exe can load. Or run `build-win\Release\windoom.exe` with
 `DOOMWADDIR` pointing at `wads\`.
 
-    play-windoom.cmd -nodlss
+    .\play-windoom.cmd -nodlss
 
 forces nearest even when NGX is built in.
 
