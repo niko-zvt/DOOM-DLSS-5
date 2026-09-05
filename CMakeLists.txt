@@ -80,6 +80,7 @@ add_executable(windoom
   win32/i_sound_win.c
   win32/i_system_win.c
   win32/i_video_win.c
+  win32/ngx_dlss.c
 )
 
 target_include_directories(windoom PRIVATE
@@ -116,3 +117,21 @@ target_link_libraries(windoom PRIVATE
   ole32
   uuid
 )
+
+set(NGX_SDK_DIR "" CACHE PATH "NVIDIA NGX SDK root (headers and lib)")
+if(NGX_SDK_DIR)
+  find_path(NGX_INCLUDE_DIR nvsdk_ngx.h
+    HINTS "${NGX_SDK_DIR}"
+    PATH_SUFFIXES include)
+  find_library(NGX_LIBRARY NAMES nvsdk_ngx_d nvsdk_ngx_s nvsdk_ngx
+    HINTS "${NGX_SDK_DIR}"
+    PATH_SUFFIXES lib/Windows_x86_64/x64 lib/x64 lib)
+  if(NGX_INCLUDE_DIR AND NGX_LIBRARY)
+    message(STATUS "NGX SDK: ${NGX_INCLUDE_DIR}")
+    target_compile_definitions(windoom PRIVATE WINDOOM_HAS_NGX)
+    target_include_directories(windoom PRIVATE ${NGX_INCLUDE_DIR})
+    target_link_libraries(windoom PRIVATE ${NGX_LIBRARY})
+  else()
+    message(STATUS "NGX SDK not complete under NGX_SDK_DIR; nearest fallback")
+  endif()
+endif()

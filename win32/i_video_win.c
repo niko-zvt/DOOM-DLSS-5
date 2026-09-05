@@ -21,6 +21,7 @@
 #include "i_video.h"
 #include "v_video.h"
 #include "gbuffer.h"
+#include "ngx_dlss.h"
 
 #define WIN_SCALE 4
 #define WIN_W (SCREENWIDTH * WIN_SCALE)
@@ -546,6 +547,7 @@ void I_ShutdownGraphics(void)
 {
     grab_mouse(0);
     wait_gpu();
+    Ngx_Shutdown();
     if (g_up_present) ID3D12Resource_Release(g_up_present);
     if (g_up_velocity) ID3D12Resource_Release(g_up_velocity);
     if (g_up_normal) ID3D12Resource_Release(g_up_normal);
@@ -612,6 +614,8 @@ void I_InitGraphics(void)
 	I_Error("CreateWindow failed");
 
     init_d3d(g_hwnd);
+    if (Ngx_Wanted())
+	Ngx_Init(g_dev, g_queue);
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
     grab_mouse(1);
