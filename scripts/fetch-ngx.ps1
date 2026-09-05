@@ -7,6 +7,40 @@ $Dest = Join-Path $Root 'third_party\ngx'
 $Tag = 'v310.7.0'
 $ZipUrl = "https://github.com/NVIDIA/DLSS/archive/refs/tags/$Tag.zip"
 $Header = Join-Path $Dest 'include\nvsdk_ngx.h'
+$Cache = Join-Path $Root 'build-win\_ngx_fetch'
+$Tmp = Join-Path $Cache "$Tag.zip"
+$Unpack = Join-Path $Cache 'unpack'
+$LegacyTmp = Join-Path $env:TEMP "windoom-dlss-$Tag.zip"
+$LegacyUnpack = Join-Path $env:TEMP "windoom-dlss-$Tag"
+
+function Expand-NgxZip {
+    param([string]$ZipPath, [string]$OutDir)
+
+    New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+    $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+    if ($tar) {
+        & $tar.Source -xf $ZipPath -C $OutDir
+        if ($LASTEXITCODE -eq 0) { return }
+        Write-Host "tar failed, trying ZipFile."
+        Remove-Item $OutDir -Recurse -Force
+        New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+    }
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $OutDir)
+}
+
+function Get-NgxZip {
+    param([string]$Url, [string]$ZipPath)
+
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        & $curl.Source -fsSL -o $ZipPath $Url
+        if ($LASTEXITCODE -ne 0) { throw "curl failed to download $Url" }
+        return
+    }
+    Invoke-WebRequest -Uri $Url -OutFile $ZipPath
+}
 
 Write-Host "WinDoom: fetch NVIDIA DLSS SDK ($Tag)"
 Write-Host "Destination (gitignored): $Dest"
@@ -16,19 +50,36 @@ Write-Host ""
 if (Test-Path $Header) {
     Write-Host "SDK already present."
 } else {
-    $Tmp = Join-Path $env:TEMP "windoom-dlss-$Tag.zip"
-    $Unpack = Join-Path $env:TEMP "windoom-dlss-$Tag"
-    Write-Host "Downloading $ZipUrl"
-    Invoke-WebRequest -Uri $ZipUrl -OutFile $Tmp
+    if (Test-Path $Dest) {
+        Write-Host "Incomplete SDK tree, fetching again."
+        Remove-Item $Dest -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $Cache | Out-Null
+    if (Test-Path $LegacyUnpack) {
+        Remove-Item $LegacyUnpack -Recurse -Force
+    }
+    if (-not (Test-Path $Tmp) -and (Test-Path $LegacyTmp)) {
+        Write-Host "Moving leftover zip off %TEMP%."
+        Move-Item $LegacyTmp $Tmp
+    } elseif (Test-Path $LegacyTmp) {
+        Remove-Item $LegacyTmp -Force
+    }
     if (Test-Path $Unpack) { Remove-Item $Unpack -Recurse -Force }
-    Expand-Archive -Path $Tmp -DestinationPath $Unpack
+
+    if (-not (Test-Path $Tmp)) {
+        Write-Host "Downloading $ZipUrl"
+        Get-NgxZip -Url $ZipUrl -ZipPath $Tmp
+    } else {
+        Write-Host "Using cached zip $Tmp"
+    }
+
+    Expand-NgxZip -ZipPath $Tmp -OutDir $Unpack
     $Inner = Get-ChildItem $Unpack -Directory | Select-Object -First 1
     if (-not $Inner) { throw "Zip had no folder" }
     New-Item -ItemType Directory -Force -Path (Split-Path $Dest) | Out-Null
-    if (Test-Path $Dest) { Remove-Item $Dest -Recurse -Force }
     Move-Item $Inner.FullName $Dest
-    Remove-Item $Tmp -Force
     Remove-Item $Unpack -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $Tmp -Force -ErrorAction SilentlyContinue
     if (-not (Test-Path $Header)) { throw "nvsdk_ngx.h missing after unpack" }
     Write-Host "Unpacked headers and libs."
 }
