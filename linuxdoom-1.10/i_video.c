@@ -25,6 +25,8 @@ static const char
 rcsid[] = "$Id: i_x.c,v 1.6 1997/02/03 22:45:10 b1 Exp $";
 
 #include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
@@ -46,7 +48,7 @@ int XShmGetEventBase( Display* dpy ); // problems with g++?
 #include <sys/socket.h>
 
 #include <netinet/in.h>
-#include <errnos.h>
+#include <errno.h>
 #include <signal.h>
 
 #include "doomstat.h"
@@ -73,6 +75,10 @@ int		X_height;
 
 // MIT SHared Memory extension.
 boolean		doShm;
+
+// Modern X11 / WSLg has no 8-bit PseudoColor.
+static int		truecolor;
+static uint32_t		xpalette[256];
 
 XShmSegmentInfo	X_shminfo;
 int		X_shmeventtype;
@@ -374,7 +380,21 @@ void I_FinishUpdate (void)
     }
 
     // scales the screen size before blitting it
-    if (multiply == 2)
+    if (truecolor)
+    {
+	int		x, y;
+	byte*		src = screens[0];
+
+	for (y = 0; y < X_height; y++)
+	{
+	    uint32_t* dst =
+		(uint32_t *) (image->data + y * image->bytes_per_line);
+	    int sy = y / multiply;
+	    for (x = 0; x < X_width; x++)
+		dst[x] = xpalette[src[sy * SCREENWIDTH + x / multiply]];
+	}
+    }
+    else if (multiply == 2)
     {
 	unsigned int *olineptrs[2];
 	unsigned int *ilineptr;
@@ -513,8 +533,7 @@ void I_FinishUpdate (void)
 			0, 0,
 			X_width, X_height );
 
-	// sync up with server
-	XSync(X_display, False);
+	XFlush(X_display);
 
     }
 
@@ -535,12 +554,43 @@ void I_ReadScreen (byte* scr)
 //
 static XColor	colors[256];
 
+static uint32_t pack_pixel(int r, int g, int b)
+{
+    uint32_t	p = 0;
+    unsigned long mask;
+    int		shift;
+
+    mask = X_visualinfo.red_mask;
+    if (mask)
+    {
+	shift = 0;
+	while (!(mask & 1)) { mask >>= 1; shift++; }
+	p |= ((uint32_t)r * (uint32_t)mask / 255u) << shift;
+    }
+    mask = X_visualinfo.green_mask;
+    if (mask)
+    {
+	shift = 0;
+	while (!(mask & 1)) { mask >>= 1; shift++; }
+	p |= ((uint32_t)g * (uint32_t)mask / 255u) << shift;
+    }
+    mask = X_visualinfo.blue_mask;
+    if (mask)
+    {
+	shift = 0;
+	while (!(mask & 1)) { mask >>= 1; shift++; }
+	p |= ((uint32_t)b * (uint32_t)mask / 255u) << shift;
+    }
+    return p;
+}
+
 void UploadNewPalette(Colormap cmap, byte *palette)
 {
 
     register int	i;
     register int	c;
     static boolean	firstcall = true;
+    int			r, g, b;
 
 #ifdef __cplusplus
     if (X_visualinfo.c_class == PseudoColor && X_visualinfo.depth == 8)
@@ -572,8 +622,16 @@ void UploadNewPalette(Colormap cmap, byte *palette)
 
 	    // store the colors to the current colormap
 	    XStoreColors(X_display, cmap, colors, 256);
-
+	    return;
 	}
+
+    for (i=0 ; i<256 ; i++)
+    {
+	r = gammatable[usegamma][*palette++];
+	g = gammatable[usegamma][*palette++];
+	b = gammatable[usegamma][*palette++];
+	xpalette[i] = pack_pixel(r, g, b);
+    }
 }
 
 //
@@ -666,7 +724,6 @@ void grabsharedmemory(int size)
       id = shmget((key_t)key, size, IPC_CREAT|0777);
       if (id==-1)
       {
-	extern int errno;
 	fprintf(stderr, "errno=%d\n", errno);
 	I_Error("Could not get any shared memory");
       }
@@ -766,16 +823,28 @@ void I_InitGraphics(void)
 	    I_Error("Could not open display (DISPLAY=[%s])", getenv("DISPLAY"));
     }
 
-    // use the default visual 
+    // use 8-bit PseudoColor if present, otherwise TrueColor (WSLg / modern X)
     X_screen = DefaultScreen(X_display);
-    if (!XMatchVisualInfo(X_display, X_screen, 8, PseudoColor, &X_visualinfo))
-	I_Error("xdoom currently only supports 256-color PseudoColor screens");
+    if (XMatchVisualInfo(X_display, X_screen, 8, PseudoColor, &X_visualinfo))
+    {
+	truecolor = 0;
+    }
+    else if (XMatchVisualInfo(X_display, X_screen, 24, TrueColor, &X_visualinfo)
+	     || XMatchVisualInfo(X_display, X_screen, 32, TrueColor, &X_visualinfo))
+    {
+	truecolor = 1;
+	fprintf(stderr, "Using %d-bit TrueColor visual\n", X_visualinfo.depth);
+    }
+    else
+	I_Error("Need 8-bit PseudoColor or 24/32-bit TrueColor");
     X_visual = X_visualinfo.visual;
 
-    // check for the MITSHM extension
+    // MIT-SHM often creates an invisible window on WSLg / Xwayland.
     doShm = XShmQueryExtension(X_display);
+    if (M_CheckParm("-noshm") || getenv("WSL_DISTRO_NAME")
+	|| (getenv("PULSE_SERVER") && strstr(getenv("PULSE_SERVER"), "wslg")))
+	doShm = false;
 
-    // even if it's available, make sure it's a local connection
     if (doShm)
     {
 	if (!displayname) displayname = (char *) getenv("DISPLAY");
@@ -788,11 +857,15 @@ void I_InitGraphics(void)
 	}
     }
 
-    fprintf(stderr, "Using MITSHM extension\n");
+    if (doShm)
+	fprintf(stderr, "Using MITSHM extension\n");
+    else
+	fprintf(stderr, "Using XPutImage (no SHM)\n");
 
     // create the colormap
     X_cmap = XCreateColormap(X_display, RootWindow(X_display,
-						   X_screen), X_visual, AllocAll);
+						   X_screen), X_visual,
+			     truecolor ? AllocNone : AllocAll);
 
     // setup attributes for main window
     attribmask = CWEventMask | CWColormap | CWBorderPixel;
@@ -811,7 +884,7 @@ void I_InitGraphics(void)
 					x, y,
 					X_width, X_height,
 					0, // borderwidth
-					8, // depth
+					X_visualinfo.depth,
 					InputOutput,
 					X_visual,
 					attribmask,
@@ -819,6 +892,22 @@ void I_InitGraphics(void)
 
     XDefineCursor(X_display, X_mainWindow,
 		  createnullcursor( X_display, X_mainWindow ) );
+
+    {
+	XSizeHints hints;
+	XClassHint classhint;
+
+	XStoreName(X_display, X_mainWindow, "Freedoom");
+	XSetIconName(X_display, X_mainWindow, "Freedoom");
+	classhint.res_name = "freedoom";
+	classhint.res_class = "Freedoom";
+	XSetClassHint(X_display, X_mainWindow, &classhint);
+	memset(&hints, 0, sizeof hints);
+	hints.flags = PSize | PMinSize;
+	hints.width = hints.min_width = X_width;
+	hints.height = hints.min_height = X_height;
+	XSetWMNormalHints(X_display, X_mainWindow, &hints);
+    }
 
     // create the GC
     valuemask = GCGraphicsExposures;
@@ -829,7 +918,8 @@ void I_InitGraphics(void)
   			&xgcvalues );
 
     // map the window
-    XMapWindow(X_display, X_mainWindow);
+    XMapRaised(X_display, X_mainWindow);
+    XFlush(X_display);
 
     // wait until it is OK to draw
     oktodraw = 0;
@@ -858,7 +948,7 @@ void I_InitGraphics(void)
 	// create the image
 	image = XShmCreateImage(	X_display,
 					X_visual,
-					8,
+					X_visualinfo.depth,
 					ZPixmap,
 					0,
 					&X_shminfo,
@@ -897,17 +987,17 @@ void I_InitGraphics(void)
     {
 	image = XCreateImage(	X_display,
     				X_visual,
-    				8,
+    				X_visualinfo.depth,
     				ZPixmap,
     				0,
-    				(char*)malloc(X_width * X_height),
+    				(char*)malloc(X_width * X_height * (truecolor ? 4 : 1)),
     				X_width, X_height,
-    				8,
-    				X_width );
+    				truecolor ? 32 : 8,
+    				0 );
 
     }
 
-    if (multiply == 1)
+    if (multiply == 1 && !truecolor)
 	screens[0] = (unsigned char *) (image->data);
     else
 	screens[0] = (unsigned char *) malloc (SCREENWIDTH * SCREENHEIGHT);

@@ -27,6 +27,8 @@ rcsid[] = "$Id: i_unix.c,v 1.5 1997/02/03 22:45:10 b1 Exp $";
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <string.h>
+#include <errno.h>
 
 #include <math.h>
 
@@ -57,12 +59,13 @@ rcsid[] = "$Id: i_unix.c,v 1.5 1997/02/03 22:45:10 b1 Exp $";
 #include "w_wad.h"
 
 #include "doomdef.h"
+#include "d_main.h"
 
 // UNIX hack, to be removed.
 #ifdef SNDSERV
 // Separate sound server process.
 FILE*	sndserver=0;
-char*	sndserver_filename = "./sndserver ";
+char*	sndserver_filename = "./sndserver";
 #elif SNDINTR
 
 // Update all 30 millisecs, approx. 30fps synchronized.
@@ -163,7 +166,6 @@ myioctl
   int*	arg )
 {   
     int		rc;
-    extern int	errno;
     
     rc = ioctl(fd, command, arg);  
     if (rc < 0)
@@ -665,8 +667,10 @@ void I_UpdateSound( void )
 void
 I_SubmitSound(void)
 {
+#ifndef SNDSERV
   // Write it to DSP device.
   write(audio_fd, mixbuffer, SAMPLECOUNT*BUFMUL);
+#endif
 }
 
 
@@ -734,27 +738,57 @@ void I_ShutdownSound(void)
 
 
 
+#ifdef SNDSERV
+static FILE* try_start_sndserver(const char *bin)
+{
+  char cmd[1024];
+
+  if (!bin || access(bin, X_OK) != 0)
+    return 0;
+
+  /* A bare name is found by access() in cwd, but popen() uses $PATH. */
+  if (!strchr(bin, '/'))
+    {
+      if (wadfiles[0])
+	snprintf(cmd, sizeof(cmd), "./%s -quiet -wad \"%s\"", bin, wadfiles[0]);
+      else
+	snprintf(cmd, sizeof(cmd), "./%s -quiet", bin);
+    }
+  else if (wadfiles[0])
+    snprintf(cmd, sizeof(cmd), "\"%s\" -quiet -wad \"%s\"", bin, wadfiles[0]);
+  else
+    snprintf(cmd, sizeof(cmd), "\"%s\" -quiet", bin);
+
+  fprintf(stderr, "I_InitSound: starting %s\n", cmd);
+  return popen(cmd, "w");
+}
+#endif
+
 void
 I_InitSound()
 { 
 #ifdef SNDSERV
-  char buffer[256];
-  
-  if (getenv("DOOMWADDIR"))
-    sprintf(buffer, "%s/%s",
-	    getenv("DOOMWADDIR"),
-	    sndserver_filename);
-  else
-    sprintf(buffer, "%s", sndserver_filename);
-  
-  // start sound process
-  if ( !access(buffer, X_OK) )
+  char buffer[512];
+  const char *waddir;
+
+  sndserver = try_start_sndserver(sndserver_filename);
+  if (!sndserver)
+    sndserver = try_start_sndserver("./sndserver");
+  if (!sndserver)
+    sndserver = try_start_sndserver("./linux/sndserver");
+  if (!sndserver)
+    sndserver = try_start_sndserver("../sndserv/linux/sndserver");
+  if (!sndserver)
   {
-    strcat(buffer, " -quiet");
-    sndserver = popen(buffer, "w");
+    waddir = getenv("DOOMWADDIR");
+    if (waddir)
+    {
+      snprintf(buffer, sizeof(buffer), "%s/sndserver", waddir);
+      sndserver = try_start_sndserver(buffer);
+    }
   }
-  else
-    fprintf(stderr, "Could not start sound server [%s]\n", buffer);
+  if (!sndserver)
+    fprintf(stderr, "Could not start sound server [%s]\n", sndserver_filename);
 #else
     
   int i;

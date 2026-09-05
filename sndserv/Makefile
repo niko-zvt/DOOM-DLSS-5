@@ -7,9 +7,9 @@
 #
 
 CC=gcc
-CFLAGS=-O -DNORMALUNIX -DLINUX
+CFLAGS=-O0 -g -DNORMALUNIX -DLINUX -std=gnu89 -fcommon -Wno-unused -U_FORTIFY_SOURCE
 LDFLAGS=
-LIBS=-lm
+LIBS=-lm -lpulse-simple -lpulse
 
 O=linux
 

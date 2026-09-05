@@ -43,6 +43,7 @@ static const char rcsid[] = "$Id: soundsrv.c,v 1.3 1997/01/29 22:40:44 b1 Exp $"
 #include <math.h>
 #include <sys/types.h>
 #include <stdio.h>
+#include <string.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -312,6 +313,9 @@ grabdata
     char*	doomuwad;
     char*	doom2wad;
     char*	doom2fwad;
+    char*	freedoom1wad;
+    char*	freedoom2wad;
+    char*	explicit_wad = 0;
     // Now where are TNT and Plutonia. Yuck.
     
     //	char *home;
@@ -337,6 +341,12 @@ grabdata
     doomwad = malloc(strlen(doomwaddir)+1+8+1);
     sprintf(doomwad, "%s/doom.wad", doomwaddir);
 
+    freedoom1wad = malloc(strlen(doomwaddir)+1+13+1);
+    sprintf(freedoom1wad, "%s/freedoom1.wad", doomwaddir);
+
+    freedoom2wad = malloc(strlen(doomwaddir)+1+13+1);
+    sprintf(freedoom2wad, "%s/freedoom2.wad", doomwaddir);
+
     //	home = getenv("HOME");
     //	if (!home)
     //	  derror("Please set $HOME to your home directory");
@@ -349,13 +359,24 @@ grabdata
 	{
 	    snd_verbose = 0;
 	}
+	if (!strcmp(v[i], "-wad") && i+1 < c)
+	    explicit_wad = v[++i];
     }
 
     numsounds = NUMSFX;
     longsound = 0;
 
-    if (! access(doom2fwad, R_OK) )
+    fprintf(stderr, "sndserver: looking for wad\n");
+    fflush(stderr);
+
+    if (explicit_wad)
+	name = explicit_wad;
+    else if (! access(doom2fwad, R_OK) )
 	name = doom2fwad;
+    else if (! access(freedoom2wad, R_OK) )
+	name = freedoom2wad;
+    else if (! access(freedoom1wad, R_OK) )
+	name = freedoom1wad;
     else if (! access(doom2wad, R_OK) )
 	name = doom2wad;
     else if (! access(doomuwad, R_OK) )
@@ -375,9 +396,12 @@ grabdata
     }
 
     
+    fprintf(stderr, "sndserver: opening [%s]\n", name);
+    fflush(stderr);
     openwad(name);
     if (snd_verbose)
 	fprintf(stderr, "loading from [%s]\n", name);
+    fflush(stderr);
 
     for (i=1 ; i<NUMSFX ; i++)
     {
@@ -387,7 +411,7 @@ grabdata
 	    if (longsound < lengths[i]) longsound = lengths[i];
 	} else {
 	    S_sfx[i].data = S_sfx[i].link->data;
-	    lengths[i] = lengths[(S_sfx[i].link - S_sfx)/sizeof(sfxinfo_t)];
+	    lengths[i] = lengths[S_sfx[i].link - S_sfx];
 	}
 	// test only
 	//  {
@@ -607,8 +631,14 @@ main
     int		i;
     int		waitingtofinish=0;
 
+    fprintf(stderr, "sndserver: starting, parsing %d args\n", c);
+    fflush(stderr);
+
     // get sound data
     grabdata(c, v);
+
+    fprintf(stderr, "sndserver: wad sounds loaded\n");
+    fflush(stderr);
 
     // init any data
     initdata();		

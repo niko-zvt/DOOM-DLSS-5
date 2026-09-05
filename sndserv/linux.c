@@ -14,21 +14,8 @@
 // FITNESS FOR A PARTICULAR PURPOSE. See the DOOM Source Code License
 // for more details.
 //
-//
-// $Log: linux.c,v $
-// Revision 1.3  1997/01/26 07:45:01  b1
-// 2nd formatting run, fixed a few warnings as well.
-//
-// Revision 1.2  1997/01/21 19:00:01  b1
-// First formatting run:
-//  using Emacs cc-mode.el indentation for C++ now.
-//
-// Revision 1.1  1997/01/19 17:22:45  b1
-// Initial check in DOOM sources as of Jan. 10th, 1997
-//
-//
 // DESCRIPTION:
-//	UNIX, soundserver for Linux i386.
+//	UNIX soundserver output. PulseAudio on modern Linux / WSL.
 //
 //-----------------------------------------------------------------------------
 
@@ -37,32 +24,22 @@ static const char rcsid[] = "$Id: linux.c,v 1.3 1997/01/26 07:45:01 b1 Exp $";
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 
+#include <pulse/simple.h>
+#include <pulse/error.h>
+
+#ifdef HAVE_LINUX_SOUNDCARD
 #include <linux/soundcard.h>
+#endif
 
 #include "soundsrv.h"
 
-int	audio_fd;
-
-void
-myioctl
-( int	fd,
-  int	command,
-  int*	arg )
-{   
-    int		rc;
-    extern int	errno;
-    
-    rc = ioctl(fd, command, arg);  
-    if (rc < 0)
-    {
-	fprintf(stderr, "ioctl(dsp,%d,arg) failed\n", command);
-	fprintf(stderr, "errno=%d\n", errno);
-	exit(-1);
-    }
-}
+static pa_simple	*pulse = NULL;
+static int		audio_fd = -1;
 
 void I_InitMusic(void)
 {
@@ -73,29 +50,47 @@ I_InitSound
 ( int	samplerate,
   int	samplesize )
 {
+    int			error;
+    pa_sample_spec	ss;
 
-    int i;
-                
+    (void)samplesize;
+
+    ss.format = PA_SAMPLE_S16LE;
+    ss.rate = samplerate;
+    ss.channels = 2;
+
+    pulse = pa_simple_new(NULL, "linuxdoom-sndserver", PA_STREAM_PLAYBACK,
+			  NULL, "game", &ss, NULL, NULL, &error);
+    if (pulse)
+    {
+	fprintf(stderr, "sndserver: PulseAudio %d Hz stereo 16-bit\n",
+		samplerate);
+	return;
+    }
+
+    fprintf(stderr, "sndserver: PulseAudio failed (%s), trying /dev/dsp\n",
+	    pa_strerror(error));
+
     audio_fd = open("/dev/dsp", O_WRONLY);
-    if (audio_fd<0)
-        fprintf(stderr, "Could not open /dev/dsp\n");
-         
-                     
-    i = 11 | (2<<16);                                           
-    myioctl(audio_fd, SNDCTL_DSP_SETFRAGMENT, &i);
-                    
-    myioctl(audio_fd, SNDCTL_DSP_RESET, 0);
-    i=11025;
-    myioctl(audio_fd, SNDCTL_DSP_SPEED, &i);
-    i=1;    
-    myioctl(audio_fd, SNDCTL_DSP_STEREO, &i);
-            
-    myioctl(audio_fd, SNDCTL_DSP_GETFMTS, &i);
-    if (i&=AFMT_S16_LE)    
-        myioctl(audio_fd, SNDCTL_DSP_SETFMT, &i);
-    else
-        fprintf(stderr, "Could not play signed 16 data\n");
+    if (audio_fd < 0)
+    {
+	fprintf(stderr, "sndserver: no audio device, running silent\n");
+	return;
+    }
 
+#ifdef HAVE_LINUX_SOUNDCARD
+    {
+	int i = 11 | (2<<16);
+	ioctl(audio_fd, SNDCTL_DSP_SETFRAGMENT, &i);
+	ioctl(audio_fd, SNDCTL_DSP_RESET, 0);
+	i = samplerate;
+	ioctl(audio_fd, SNDCTL_DSP_SPEED, &i);
+	i = 1;
+	ioctl(audio_fd, SNDCTL_DSP_STEREO, &i);
+	i = AFMT_S16_LE;
+	ioctl(audio_fd, SNDCTL_DSP_SETFMT, &i);
+    }
+#endif
 }
 
 void
@@ -103,14 +98,36 @@ I_SubmitOutputBuffer
 ( void*	samples,
   int	samplecount )
 {
-    write(audio_fd, samples, samplecount*4);
+    int	error;
+
+    if (pulse)
+    {
+	if (pa_simple_write(pulse, samples, (size_t)samplecount * 4, &error) < 0)
+	    fprintf(stderr, "sndserver: PulseAudio write: %s\n",
+		    pa_strerror(error));
+	return;
+    }
+
+    if (audio_fd >= 0)
+	write(audio_fd, samples, samplecount * 4);
 }
 
 void I_ShutdownSound(void)
 {
+    int	error;
 
-    close(audio_fd);
+    if (pulse)
+    {
+	pa_simple_drain(pulse, &error);
+	pa_simple_free(pulse);
+	pulse = NULL;
+    }
 
+    if (audio_fd >= 0)
+    {
+	close(audio_fd);
+	audio_fd = -1;
+    }
 }
 
 void I_ShutdownMusic(void)

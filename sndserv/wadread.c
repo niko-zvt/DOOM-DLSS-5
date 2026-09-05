@@ -40,6 +40,7 @@ static const char rcsid[] = "$Id: wadread.c,v 1.3 1997/01/30 19:54:23 b1 Exp $";
 
 
 #include <malloc.h>
+#include <string.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <stdio.h>
@@ -176,21 +177,25 @@ void openwad(char* wadname)
     tablelength = numlumps * sizeof(lumpinfo_t);
     tablefilelength = numlumps * sizeof(filelump_t);
     lumpinfo = (lumpinfo_t *) malloc(tablelength);
-    filetable = (filelump_t *) ((char*)lumpinfo + tablelength - tablefilelength);
+    filetable = (filelump_t *) malloc(tablefilelength);
+    if (!lumpinfo || !filetable)
+	derror("Could not allocate wad directory");
 
     // get the lumpinfo table
     lseek(wadfile, tableoffset, SEEK_SET);
     read(wadfile, filetable, tablefilelength);
 
-    // process the table to make the endianness right and shift it down
+    // process the table to make the endianness right
     for (i=0 ; i<numlumps ; i++)
     {
-	strncpy(lumpinfo[i].name, filetable[i].name, 8);
+	memcpy(lumpinfo[i].name, filetable[i].name, 8);
 	lumpinfo[i].handle = wadfile;
 	lumpinfo[i].filepos = LONG(filetable[i].filepos);
 	lumpinfo[i].size = LONG(filetable[i].size);
 	// fprintf(stderr, "lump [%.8s] exists\n", lumpinfo[i].name);
     }
+
+    free(filetable);
 
 }
 
@@ -243,9 +248,19 @@ getsfx
     sprintf(name, "ds%s", sfxname);
 
     sfx = (unsigned char *) loadlump(name, &size);
+    if (!sfx || size < 8)
+    {
+	size = 8;
+	sfx = (unsigned char *) malloc(8);
+	if (!sfx)
+	    derror("Could not allocate empty sfx");
+	memset(sfx, 128, 8);
+    }
 
     // pad the sound effect out to the mixing buffer size
     paddedsize = ((size-8 + (SAMPLECOUNT-1)) / SAMPLECOUNT) * SAMPLECOUNT;
+    if (paddedsize < SAMPLECOUNT)
+	paddedsize = SAMPLECOUNT;
     paddedsfx = (unsigned char *) realloc(sfx, paddedsize+8);
     for (i=size ; i<paddedsize+8 ; i++)
 	paddedsfx[i] = 128;
