@@ -70,6 +70,10 @@ rcsid[] = "$Id: g_game.c,v 1.8 1997/02/03 22:45:09 b1 Exp $";
 
 #include "g_game.h"
 
+#ifdef _WIN32
+#include "gbuffer.h"
+#endif
+
 
 #define SAVEGAMESIZE	0x2c000
 #define SAVESTRINGSIZE	24
@@ -471,6 +475,10 @@ void G_DoLoadLevel (void)
     
     if (wipegamestate == GS_LEVEL) 
 	wipegamestate = -1;             // force a wipe 
+
+#ifdef _WIN32
+    GB_RequestReset();
+#endif
 
     gamestate = GS_LEVEL; 
 

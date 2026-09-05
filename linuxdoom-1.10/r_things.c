@@ -43,6 +43,10 @@ rcsid[] = "$Id: r_things.c,v 1.5 1997/02/03 16:47:56 b1 Exp $";
 
 #ifdef _WIN32
 #include "gbuffer.h"
+
+static fixed_t vis_momx[MAXVISSPRITES];
+static fixed_t vis_momy[MAXVISSPRITES];
+static fixed_t vis_momz[MAXVISSPRITES];
 #endif
 
 
@@ -447,6 +451,36 @@ R_DrawVisSprite
     frac = vis->startfrac;
     spryscale = vis->scale;
     sprtopscreen = centeryfrac - FixedMul(dc_texturemid,spryscale);
+
+#ifdef _WIN32
+    {
+	int vi = (int)(vis - vissprites);
+	float du = 0.0f, dv = 0.0f;
+	if (vi >= 0 && vi < MAXVISSPRITES && vis->scale > 256)
+	{
+	    float z = (float)projection / (float)vis->scale;
+	    float proj = (float)projection / 65536.0f;
+	    float mx = (float)vis_momx[vi] / 65536.0f;
+	    float my = (float)vis_momy[vi] / 65536.0f;
+	    float mz = (float)vis_momz[vi] / 65536.0f;
+	    float vc = (float)viewcos / 65536.0f;
+	    float vs = (float)viewsin / 65536.0f;
+	    float d_right;
+	    float d_fwd;
+
+	    if (proj < 1.0f)
+		proj = (float)centerx;
+	    if (z < 1.0f)
+		z = 1.0f;
+	    d_right = -mx * vs + my * vc;
+	    d_fwd = mx * vc + my * vs;
+	    (void)d_fwd;
+	    du = d_right * (proj / z);
+	    dv = -mz * (proj / z);
+	}
+	GB_SetObjectMotion(du, dv);
+    }
+#endif
 	
     for (dc_x=vis->x1 ; dc_x<=vis->x2 ; dc_x++, frac += vis->xiscale)
     {
@@ -594,6 +628,18 @@ void R_ProjectSprite (mobj_t* thing)
     if (vis->x1 > x1)
 	vis->startfrac += vis->xiscale*(vis->x1-x1);
     vis->patch = lump;
+
+#ifdef _WIN32
+    {
+	int vi = (int)(vis - vissprites);
+	if (vi >= 0 && vi < MAXVISSPRITES)
+	{
+	    vis_momx[vi] = thing->momx;
+	    vis_momy[vi] = thing->momy;
+	    vis_momz[vi] = thing->momz;
+	}
+    }
+#endif
     
     // get light level
     if (thing->flags & MF_SHADOW)
