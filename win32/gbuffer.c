@@ -351,6 +351,47 @@ void GB_ComposePresent(unsigned char *dst_bgra, int dst_w, int dst_h)
 	    d[0] = b;
 	    d[1] = g;
 	    d[2] = r;
+            d[3] = 255;
+	}
+    }
+}
+
+int GB_HasScenePixels(void)
+{
+    int i;
+
+    for (i = 0; i < GB_PIX; i++)
+    {
+	if (gb_depth[i] > 0.0f && gb_depth[i] < GB_FAR_Z)
+	    return 1;
+    }
+    return 0;
+}
+
+void GB_OverlayHud(unsigned char *dst_bgra, int dst_w, int dst_h)
+{
+    int x, y;
+    int sx, sy;
+    int src;
+
+    if (!dst_bgra || dst_w < 1 || dst_h < 1)
+	return;
+
+    for (y = 0; y < dst_h; y++)
+    {
+	sy = y * GB_HEIGHT / dst_h;
+	for (x = 0; x < dst_w; x++)
+	{
+	    unsigned char *d;
+
+	    sx = x * GB_WIDTH / dst_w;
+	    src = sy * GB_WIDTH + sx;
+	    if (gb_depth[src] != 0.0f)
+		continue;
+	    d = dst_bgra + (y * dst_w + x) * 4;
+	    d[0] = gb_color[src * 4 + 2];
+	    d[1] = gb_color[src * 4 + 1];
+	    d[2] = gb_color[src * 4 + 0];
 	    d[3] = 255;
 	}
     }

@@ -57,6 +57,7 @@ static ID3D12Resource *g_up_depth;
 static ID3D12Resource *g_up_normal;
 static ID3D12Resource *g_up_velocity;
 static ID3D12Resource *g_up_present;
+static ID3D12Resource *g_readback;
 static D3D12_RESOURCE_STATES g_bb_state[FRAME_COUNT];
 
 static unsigned char g_present[WIN_W * WIN_H * 4];
@@ -280,6 +281,92 @@ static ID3D12Resource *make_tex(UINT w, UINT h, DXGI_FORMAT fmt,
     return res;
 }
 
+static ID3D12Resource *make_readback(UINT64 size)
+{
+    D3D12_HEAP_PROPERTIES heap;
+    D3D12_RESOURCE_DESC desc;
+    ID3D12Resource *res = NULL;
+
+    memset(&heap, 0, sizeof(heap));
+    heap.Type = D3D12_HEAP_TYPE_READBACK;
+    memset(&desc, 0, sizeof(desc));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = size;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (FAILED(ID3D12Device_CreateCommittedResource(
+	    g_dev, &heap, D3D12_HEAP_FLAG_NONE, &desc,
+	    D3D12_RESOURCE_STATE_COPY_DEST, NULL,
+	    &IID_ID3D12Resource, (void **)&res)))
+	return NULL;
+    return res;
+}
+
+static void copy_tex_to_buffer(ID3D12Resource *src, ID3D12Resource *dst,
+			       UINT w, UINT h, DXGI_FORMAT fmt)
+{
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
+    D3D12_TEXTURE_COPY_LOCATION dst_loc;
+    D3D12_TEXTURE_COPY_LOCATION src_loc;
+    D3D12_RESOURCE_DESC desc;
+    UINT num_rows;
+    UINT64 row_size;
+    UINT64 total;
+
+    memset(&desc, 0, sizeof(desc));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = w;
+    desc.Height = h;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = fmt;
+    desc.SampleDesc.Count = 1;
+    ID3D12Device_GetCopyableFootprints(g_dev, &desc, 0, 1, 0,
+				       &fp, &num_rows, &row_size, &total);
+    memset(&dst_loc, 0, sizeof(dst_loc));
+    dst_loc.pResource = dst;
+    dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst_loc.PlacedFootprint = fp;
+    memset(&src_loc, 0, sizeof(src_loc));
+    src_loc.pResource = src;
+    src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    ID3D12GraphicsCommandList_CopyTextureRegion(g_cmd, &dst_loc, 0, 0, 0,
+						&src_loc, NULL);
+}
+
+static int readback_to_present(UINT w, UINT h, DXGI_FORMAT fmt)
+{
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
+    D3D12_RESOURCE_DESC desc;
+    UINT num_rows;
+    UINT64 row_size;
+    UINT64 total;
+    unsigned char *mapped = NULL;
+    UINT y;
+    UINT dst_pitch = w * 4;
+
+    memset(&desc, 0, sizeof(desc));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = w;
+    desc.Height = h;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = fmt;
+    desc.SampleDesc.Count = 1;
+    ID3D12Device_GetCopyableFootprints(g_dev, &desc, 0, 1, 0,
+				       &fp, &num_rows, &row_size, &total);
+    if (FAILED(ID3D12Resource_Map(g_readback, 0, NULL, (void **)&mapped)))
+	return 0;
+    for (y = 0; y < h; y++)
+	memcpy(g_present + y * dst_pitch,
+	       mapped + fp.Offset + y * fp.Footprint.RowPitch, dst_pitch);
+    ID3D12Resource_Unmap(g_readback, 0, NULL);
+    return 1;
+}
+
 static ID3D12Resource *make_upload(UINT64 size)
 {
     D3D12_HEAP_PROPERTIES heap;
@@ -454,10 +541,11 @@ static void init_d3d(HWND hwnd)
     g_up_normal = make_upload(upload_bytes(GB_WIDTH, GB_HEIGHT, 4));
     g_up_velocity = make_upload(upload_bytes(GB_WIDTH, GB_HEIGHT, 8));
     g_up_present = make_upload(upload_bytes(WIN_W, WIN_H, 4));
+    g_readback = make_readback(upload_bytes(WIN_W, WIN_H, 4));
     if (!g_tex_color || !g_tex_depth || !g_tex_normal || !g_tex_velocity ||
 	!g_tex_out ||
 	!g_up_color || !g_up_depth || !g_up_normal || !g_up_velocity ||
-	!g_up_present)
+	!g_up_present || !g_readback)
 	I_Error("G-buffer textures failed");
 }
 
@@ -532,7 +620,8 @@ void I_FinishUpdate(void)
     upload_tex(g_tex_velocity, g_up_velocity, GB_VelocityRG(),
 	       GB_WIDTH, GB_HEIGHT, 8, DXGI_FORMAT_R32G32_FLOAT);
 
-    if (Ngx_Ready() && GB_GetDebugView() == GB_VIEW_COLOR)
+    if (Ngx_Ready() && GB_GetDebugView() == GB_VIEW_COLOR &&
+	GB_HasScenePixels())
     {
 	barrier(g_tex_color, &g_st_color,
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -545,28 +634,29 @@ void I_FinishUpdate(void)
 				g_tex_velocity, g_tex_out, reset);
     }
 
-    barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_COPY_DEST);
     if (used_ngx)
     {
-	D3D12_TEXTURE_COPY_LOCATION dst_loc;
-	D3D12_TEXTURE_COPY_LOCATION src_loc;
-
 	barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_COPY_SOURCE);
-	memset(&dst_loc, 0, sizeof(dst_loc));
-	dst_loc.pResource = g_bb[idx];
-	dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-	memset(&src_loc, 0, sizeof(src_loc));
-	src_loc.pResource = g_tex_out;
-	src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-	ID3D12GraphicsCommandList_CopyTextureRegion(g_cmd, &dst_loc, 0, 0, 0,
-						    &src_loc, NULL);
+	copy_tex_to_buffer(g_tex_out, g_readback, WIN_W, WIN_H,
+			   DXGI_FORMAT_B8G8R8A8_UNORM);
+	ID3D12GraphicsCommandList_Close(g_cmd);
+	lists[0] = (ID3D12CommandList *)g_cmd;
+	ID3D12CommandQueue_ExecuteCommandLists(g_queue, 1, lists);
+	wait_gpu();
+	if (!readback_to_present(WIN_W, WIN_H, DXGI_FORMAT_B8G8R8A8_UNORM))
+	    used_ngx = 0;
+	else
+	    GB_OverlayHud(g_present, WIN_W, WIN_H);
+	ID3D12CommandAllocator_Reset(g_alloc);
+	ID3D12GraphicsCommandList_Reset(g_cmd, g_alloc, NULL);
     }
-    else
-    {
+
+    if (!used_ngx)
 	GB_ComposePresent(g_present, WIN_W, WIN_H);
-	upload_tex(g_bb[idx], g_up_present, g_present,
-		   WIN_W, WIN_H, 4, DXGI_FORMAT_B8G8R8A8_UNORM);
-    }
+
+    barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_COPY_DEST);
+    upload_tex(g_bb[idx], g_up_present, g_present,
+	       WIN_W, WIN_H, 4, DXGI_FORMAT_B8G8R8A8_UNORM);
     barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_PRESENT);
 
     ID3D12GraphicsCommandList_Close(g_cmd);
@@ -602,6 +692,7 @@ void I_ShutdownGraphics(void)
     grab_mouse(0);
     wait_gpu();
     Ngx_Shutdown();
+    if (g_readback) ID3D12Resource_Release(g_readback);
     if (g_up_present) ID3D12Resource_Release(g_up_present);
     if (g_up_velocity) ID3D12Resource_Release(g_up_velocity);
     if (g_up_normal) ID3D12Resource_Release(g_up_normal);
@@ -621,7 +712,7 @@ void I_ShutdownGraphics(void)
     if (g_fence) ID3D12Fence_Release(g_fence);
     if (g_fence_ev) CloseHandle(g_fence_ev);
     if (g_dev) ID3D12Device_Release(g_dev);
-    g_up_present = g_up_velocity = g_up_normal = g_up_depth = g_up_color = NULL;
+    g_readback = g_up_present = g_up_velocity = g_up_normal = g_up_depth = g_up_color = NULL;
     g_tex_out = g_tex_velocity = g_tex_normal = g_tex_depth = g_tex_color = NULL;
     g_bb[0] = g_bb[1] = NULL;
     g_swap = NULL;

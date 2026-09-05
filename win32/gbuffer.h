@@ -50,6 +50,8 @@ const unsigned char *GB_NormalRGBA(void);
 const float         *GB_VelocityRG(void);
 
 void GB_ComposePresent(unsigned char *dst_bgra, int dst_w, int dst_h);
+int  GB_HasScenePixels(void);
+void GB_OverlayHud(unsigned char *dst_bgra, int dst_w, int dst_h);
 
 #ifdef __cplusplus
 }
