@@ -118,8 +118,13 @@ target_link_libraries(windoom PRIVATE
   uuid
 )
 
+option(WINDOOM_NGX "Link NVIDIA NGX (needs a local SDK; off by default)" OFF)
 set(NGX_SDK_DIR "" CACHE PATH "NVIDIA NGX SDK root (headers and lib)")
-if(NGX_SDK_DIR)
+
+if(WINDOOM_NGX)
+  if(NOT NGX_SDK_DIR AND EXISTS "${CMAKE_SOURCE_DIR}/third_party/ngx/include/nvsdk_ngx.h")
+    set(NGX_SDK_DIR "${CMAKE_SOURCE_DIR}/third_party/ngx")
+  endif()
   find_path(NGX_INCLUDE_DIR nvsdk_ngx.h
     HINTS "${NGX_SDK_DIR}"
     PATH_SUFFIXES include)
@@ -127,11 +132,15 @@ if(NGX_SDK_DIR)
     HINTS "${NGX_SDK_DIR}"
     PATH_SUFFIXES lib/Windows_x86_64/x64 lib/x64 lib)
   if(NGX_INCLUDE_DIR AND NGX_LIBRARY)
-    message(STATUS "NGX SDK: ${NGX_INCLUDE_DIR}")
+    message(STATUS "NGX enabled: ${NGX_INCLUDE_DIR}")
     target_compile_definitions(windoom PRIVATE WINDOOM_HAS_NGX)
     target_include_directories(windoom PRIVATE ${NGX_INCLUDE_DIR})
     target_link_libraries(windoom PRIVATE ${NGX_LIBRARY})
   else()
-    message(STATUS "NGX SDK not complete under NGX_SDK_DIR; nearest fallback")
+    message(FATAL_ERROR
+      "WINDOOM_NGX=ON but the SDK was not found. Run fetch-ngx.cmd first "
+      "or pass -DNGX_SDK_DIR=...")
   endif()
+else()
+  message(STATUS "NGX disabled (nearest present). Use build.cmd --dlss-on to enable.")
 endif()

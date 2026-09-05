@@ -12,14 +12,19 @@ Carmack's old note is in README.TXT.
 
 ## Build
 
-    cmake -S . -B build-win -G "Visual Studio 18 2026" -A x64
+    build.cmd
+
+GPLv2 only: nearest present, no NVIDIA SDK.
+
+    build.cmd --dlss-on
+
+Downloads NVIDIA/DLSS into gitignored `third_party/ngx/`, links NGX,
+copies `nvngx_dlss.dll` next to the exe. Details: `win32/README-NGX.md`.
+
+Or cmake by hand:
+
+    cmake -S . -B build-win -A x64 -DWINDOOM_NGX=OFF
     cmake --build build-win --config Release
-
-Optional NGX headers/libs (not required to compile):
-
-    cmake -S . -B build-win -G "Visual Studio 18 2026" -A x64 -DNGX_SDK_DIR=C:\path\to\ngx
-
-Use whatever VS generator you have (17 2022, 18 2026, ...).
 
 ## Run
 
@@ -38,9 +43,9 @@ forces nearest even when NGX is built in.
 ## DLSS5-Swapper
 
 Add the folder that contains `windoom.exe` (usually `build-win\Release`).
-The exe is DirectX 12. Copy `nvngx_dlss.dll` there yourself (not in git).
-Swapper should offer **Native**. Do not put your own `dxgi.dll` in that
-folder. Details: `win32/README-NGX.md`.
+The exe is DirectX 12. `fetch-ngx.cmd` copies `nvngx_dlss.dll` there
+(not in git). Swapper should offer **Native**. Do not put your own
+`dxgi.dll` in that folder. Details: `win32/README-NGX.md`.
 
 ## Keys
 

@@ -2,36 +2,43 @@
 
 Copyright (C) 2026 Nikolai Zhivotenko. GPLv2, see LICENSE.TXT.
 
-WinDoom calls NVIDIA NGX itself (D3D12 Super Resolution). Swapper can
-then replace `nvngx_dlss.dll`. The NVIDIA SDK and DLLs are **not** in
-this repo.
+WinDoom is GPLv2. NVIDIA DLSS / NGX is not in this tree. Default
+build is nearest 4x. NGX is local only: `third_party/ngx/` (gitignored)
+and `nvngx_dlss.dll` next to the exe.
 
-## Local NGX files
+## Build
 
-1. Get the NVIDIA NGX / DLSS SDK (developer.nvidia.com).
-2. Point CMake at it:
+    build.cmd              nearest, no NVIDIA
+    build.cmd --dlss-on    fetch SDK, link NGX, copy the DLL
+    play-windoom.cmd
 
-       cmake -S . -B build-win -A x64 -DNGX_SDK_DIR=C:\path\to\NGX_SDK
+`--dlss-on` runs `fetch-ngx.cmd` (NVIDIA/DLSS tag v310.7.0 into
+`third_party/ngx/`) then cmake with `-DWINDOOM_NGX=ON`. A plain
+`build.cmd` always passes `-DWINDOOM_NGX=OFF`, even if that folder
+already exists.
 
-   Need `nvsdk_ngx.h` and `nvsdk_ngx_d.lib` (or `nvsdk_ngx_s` / `nvsdk_ngx`).
-   Without this, the exe still builds and presents nearest.
+Manual:
 
-3. Copy `nvngx_dlss.dll` next to `windoom.exe`
-   (`build-win\Release\`). Git ignores `nvngx*.dll` and `third_party/ngx/`.
+    fetch-ngx.cmd
+    cmake -S . -B build-win -A x64 -DWINDOOM_NGX=ON
+    cmake --build build-win --config Release
 
-4. Run from that folder (`play-windoom.cmd` does). `-nodlss` skips NGX.
+Need `include/nvsdk_ngx.h` and `nvsdk_ngx_d.lib` (or `_s` / `nvsdk_ngx`).
+`WINDOOM_NGX=ON` without a SDK is a configure error.
 
-Input is 320x200. Output is 1280x800. Jitter is 0. HUD pixels
-(depth == 0) are nearest-blitted after evaluate.
+    play-windoom.cmd -nodlss
+
+skips NGX at runtime.
+
+Input 320x200, output 1280x800, jitter 0. HUD (depth == 0) is
+nearest-blitted after evaluate.
 
 ## Swapper Native
 
-1. Build Release.
-2. Put `nvngx_dlss.dll` beside the exe.
-3. In DLSS5-Swapper: Add folder → `build-win\Release` (the exe dir).
-4. Scanner should report DirectX 12, 64-bit, and Native available.
-5. Install Native. Swapper replaces `nvngx_dlss.dll` and adds
-   `nvngx_dlssnr.dll` / RenoDX. Do not drop a `dxgi.dll` of your own
-   into that folder first.
+1. `fetch-ngx.cmd` and a Release build with NGX found (`WINDOOM_HAS_NGX`).
+2. `nvngx_dlss.dll` beside `build-win\Release\windoom.exe`.
+3. DLSS5-Swapper: Add folder → `build-win\Release`.
+4. Expect DirectX 12, 64-bit, **Native**.
+5. Install Native. Do not drop your own `dxgi.dll` in that folder first.
 
-Feeder still works if you pick it, but Native is the intended route.
+Feeder still works if you pick it. Native is the intended route.
