@@ -110,7 +110,7 @@ if(MSVC)
 endif()
 
 target_link_libraries(windoom PRIVATE
-  d3d11
+  d3d12
   dxgi
   dxguid
   ole32

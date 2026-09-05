@@ -7,8 +7,8 @@
 #define COBJMACROS
 #include <windows.h>
 #include <initguid.h>
-#include <d3d11.h>
-#include <dxgi.h>
+#include <d3d12.h>
+#include <dxgi1_4.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,34 +25,35 @@
 #define WIN_SCALE 4
 #define WIN_W (SCREENWIDTH * WIN_SCALE)
 #define WIN_H (SCREENHEIGHT * WIN_SCALE)
+#define FRAME_COUNT 2
 
 static HWND g_hwnd;
 static int g_mouse_grab;
 static int g_mouse_buttons;
 static int g_have_focus = 1;
 
-static ID3D11Device *g_dev;
-static ID3D11DeviceContext *g_ctx;
-static IDXGISwapChain *g_swap;
-static ID3D11Texture2D *g_bb;
-static ID3D11Texture2D *g_staging;
-static ID3D11Texture2D *g_tex_color;
-static ID3D11Texture2D *g_tex_depth;
-static ID3D11Texture2D *g_tex_normal;
-static ID3D11Texture2D *g_tex_velocity;
+static ID3D12Device *g_dev;
+static ID3D12CommandQueue *g_queue;
+static ID3D12CommandAllocator *g_alloc;
+static ID3D12GraphicsCommandList *g_cmd;
+static ID3D12Fence *g_fence;
+static HANDLE g_fence_ev;
+static UINT64 g_fence_val;
+static IDXGISwapChain3 *g_swap;
+static ID3D12Resource *g_bb[FRAME_COUNT];
+static ID3D12Resource *g_tex_color;
+static ID3D12Resource *g_tex_depth;
+static ID3D12Resource *g_tex_normal;
+static ID3D12Resource *g_tex_velocity;
+static ID3D12Resource *g_up_color;
+static ID3D12Resource *g_up_depth;
+static ID3D12Resource *g_up_normal;
+static ID3D12Resource *g_up_velocity;
+static ID3D12Resource *g_up_present;
+static D3D12_RESOURCE_STATES g_bb_state[FRAME_COUNT];
 
 static unsigned char g_present[WIN_W * WIN_H * 4];
 static unsigned char g_palette[768];
-
-static const GUID kD3DDebugName =
-    {0x429b8c22, 0x9188, 0x4b0c, {0x87, 0x42, 0xac, 0xb0, 0xbf, 0x85, 0xc2, 0x00}};
-
-static void d3d_name(ID3D11DeviceChild *obj, const char *name)
-{
-    if (obj && name)
-	ID3D11DeviceChild_SetPrivateData(obj, &kD3DDebugName,
-					 (UINT)strlen(name), name);
-}
 
 static int xlatekey(WPARAM vk)
 {
@@ -208,72 +209,238 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
     }
 }
 
-static ID3D11Texture2D *make_tex(DXGI_FORMAT fmt, UINT bind, const char *name)
+static void wait_gpu(void)
 {
-    D3D11_TEXTURE2D_DESC d;
-    ID3D11Texture2D *tex = NULL;
+    UINT64 v;
 
-    memset(&d, 0, sizeof(d));
-    d.Width = GB_WIDTH;
-    d.Height = GB_HEIGHT;
-    d.MipLevels = 1;
-    d.ArraySize = 1;
-    d.Format = fmt;
-    d.SampleDesc.Count = 1;
-    d.Usage = D3D11_USAGE_DEFAULT;
-    d.BindFlags = bind;
-    if (FAILED(ID3D11Device_CreateTexture2D(g_dev, &d, NULL, &tex)))
+    if (!g_queue || !g_fence)
+	return;
+    v = ++g_fence_val;
+    if (FAILED(ID3D12CommandQueue_Signal(g_queue, g_fence, v)))
+	return;
+    if (ID3D12Fence_GetCompletedValue(g_fence) < v)
+    {
+	ID3D12Fence_SetEventOnCompletion(g_fence, v, g_fence_ev);
+	WaitForSingleObject(g_fence_ev, INFINITE);
+    }
+}
+
+static void barrier(ID3D12Resource *res, D3D12_RESOURCE_STATES *cur,
+		    D3D12_RESOURCE_STATES next)
+{
+    D3D12_RESOURCE_BARRIER b;
+
+    if (!res || *cur == next)
+	return;
+    memset(&b, 0, sizeof(b));
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = res;
+    b.Transition.StateBefore = *cur;
+    b.Transition.StateAfter = next;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    ID3D12GraphicsCommandList_ResourceBarrier(g_cmd, 1, &b);
+    *cur = next;
+}
+
+static ID3D12Resource *make_tex(UINT w, UINT h, DXGI_FORMAT fmt,
+				const wchar_t *name)
+{
+    D3D12_HEAP_PROPERTIES heap;
+    D3D12_RESOURCE_DESC desc;
+    ID3D12Resource *res = NULL;
+
+    memset(&heap, 0, sizeof(heap));
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    memset(&desc, 0, sizeof(desc));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = w;
+    desc.Height = h;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = fmt;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    if (FAILED(ID3D12Device_CreateCommittedResource(
+	    g_dev, &heap, D3D12_HEAP_FLAG_NONE, &desc,
+	    D3D12_RESOURCE_STATE_COPY_DEST, NULL,
+	    &IID_ID3D12Resource, (void **)&res)))
 	return NULL;
-    d3d_name((ID3D11DeviceChild *)tex, name);
-    return tex;
+    if (name)
+	ID3D12Object_SetName((ID3D12Object *)res, name);
+    return res;
+}
+
+static ID3D12Resource *make_upload(UINT64 size)
+{
+    D3D12_HEAP_PROPERTIES heap;
+    D3D12_RESOURCE_DESC desc;
+    ID3D12Resource *res = NULL;
+
+    memset(&heap, 0, sizeof(heap));
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    memset(&desc, 0, sizeof(desc));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = size;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (FAILED(ID3D12Device_CreateCommittedResource(
+	    g_dev, &heap, D3D12_HEAP_FLAG_NONE, &desc,
+	    D3D12_RESOURCE_STATE_GENERIC_READ, NULL,
+	    &IID_ID3D12Resource, (void **)&res)))
+	return NULL;
+    return res;
+}
+
+static UINT64 upload_bytes(UINT w, UINT h, UINT bpp)
+{
+    UINT pitch = (w * bpp + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
+	~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+    return (UINT64)pitch * h + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+}
+
+static void upload_tex(ID3D12Resource *dst, ID3D12Resource *upload,
+		       const void *src, UINT w, UINT h, UINT bpp,
+		       DXGI_FORMAT fmt)
+{
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
+    D3D12_TEXTURE_COPY_LOCATION dst_loc;
+    D3D12_TEXTURE_COPY_LOCATION src_loc;
+    D3D12_RESOURCE_DESC desc;
+    UINT num_rows;
+    UINT64 row_size;
+    UINT64 total;
+    unsigned char *mapped = NULL;
+    UINT y;
+    UINT src_pitch = w * bpp;
+
+    memset(&desc, 0, sizeof(desc));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = w;
+    desc.Height = h;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = fmt;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    ID3D12Device_GetCopyableFootprints(g_dev, &desc, 0, 1, 0,
+				       &fp, &num_rows, &row_size, &total);
+    if (FAILED(ID3D12Resource_Map(upload, 0, NULL, (void **)&mapped)))
+	return;
+    for (y = 0; y < h; y++)
+	memcpy(mapped + fp.Offset + y * fp.Footprint.RowPitch,
+	       (const unsigned char *)src + y * src_pitch, src_pitch);
+    ID3D12Resource_Unmap(upload, 0, NULL);
+
+    memset(&dst_loc, 0, sizeof(dst_loc));
+    dst_loc.pResource = dst;
+    dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst_loc.PlacedFootprint = fp;
+    dst_loc.SubresourceIndex = 0;
+    memset(&src_loc, 0, sizeof(src_loc));
+    src_loc.pResource = upload;
+    src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src_loc.PlacedFootprint = fp;
+    ID3D12GraphicsCommandList_CopyTextureRegion(g_cmd, &dst_loc, 0, 0, 0,
+						&src_loc, NULL);
 }
 
 static void init_d3d(HWND hwnd)
 {
-    DXGI_SWAP_CHAIN_DESC sd;
-    D3D11_TEXTURE2D_DESC td;
+    IDXGIFactory4 *factory = NULL;
+    IDXGISwapChain1 *swap1 = NULL;
+    D3D12_COMMAND_QUEUE_DESC qd;
+    DXGI_SWAP_CHAIN_DESC1 scd;
     HRESULT hr;
+    UINT i;
 
-    memset(&sd, 0, sizeof(sd));
-    sd.BufferCount = 2;
-    sd.BufferDesc.Width = WIN_W;
-    sd.BufferDesc.Height = WIN_H;
-    sd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    sd.OutputWindow = hwnd;
-    sd.SampleDesc.Count = 1;
-    sd.Windowed = TRUE;
-    sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-
-    hr = D3D11CreateDeviceAndSwapChain(
-	NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0,
-	NULL, 0, D3D11_SDK_VERSION, &sd,
-	&g_swap, &g_dev, NULL, &g_ctx);
+    hr = CreateDXGIFactory2(0, &IID_IDXGIFactory4, (void **)&factory);
     if (FAILED(hr))
-	I_Error("D3D11CreateDeviceAndSwapChain failed (0x%08lx)", (unsigned long)hr);
+	I_Error("CreateDXGIFactory2 failed (0x%08lx)", (unsigned long)hr);
 
-    hr = IDXGISwapChain_GetBuffer(g_swap, 0, &IID_ID3D11Texture2D, (void **)&g_bb);
+    hr = D3D12CreateDevice(NULL, D3D_FEATURE_LEVEL_11_0,
+			   &IID_ID3D12Device, (void **)&g_dev);
     if (FAILED(hr))
-	I_Error("GetBuffer failed");
+	I_Error("D3D12CreateDevice failed (0x%08lx)", (unsigned long)hr);
 
-    memset(&td, 0, sizeof(td));
-    td.Width = WIN_W;
-    td.Height = WIN_H;
-    td.MipLevels = 1;
-    td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_STAGING;
-    td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    hr = ID3D11Device_CreateTexture2D(g_dev, &td, NULL, &g_staging);
+    memset(&qd, 0, sizeof(qd));
+    qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    hr = ID3D12Device_CreateCommandQueue(g_dev, &qd, &IID_ID3D12CommandQueue,
+					 (void **)&g_queue);
     if (FAILED(hr))
-	I_Error("staging texture failed");
+	I_Error("CreateCommandQueue failed");
 
-    g_tex_color = make_tex(DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE, "GB_Color");
-    g_tex_depth = make_tex(DXGI_FORMAT_R32_FLOAT, D3D11_BIND_SHADER_RESOURCE, "GB_Depth");
-    g_tex_normal = make_tex(DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE, "GB_Normal");
-    g_tex_velocity = make_tex(DXGI_FORMAT_R32G32_FLOAT, D3D11_BIND_SHADER_RESOURCE, "GB_Velocity");
-    if (!g_tex_color || !g_tex_depth || !g_tex_normal || !g_tex_velocity)
+    hr = ID3D12Device_CreateCommandAllocator(g_dev, D3D12_COMMAND_LIST_TYPE_DIRECT,
+					     &IID_ID3D12CommandAllocator,
+					     (void **)&g_alloc);
+    if (FAILED(hr))
+	I_Error("CreateCommandAllocator failed");
+
+    hr = ID3D12Device_CreateCommandList(g_dev, 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+					g_alloc, NULL,
+					&IID_ID3D12GraphicsCommandList,
+					(void **)&g_cmd);
+    if (FAILED(hr))
+	I_Error("CreateCommandList failed");
+    ID3D12GraphicsCommandList_Close(g_cmd);
+
+    hr = ID3D12Device_CreateFence(g_dev, 0, D3D12_FENCE_FLAG_NONE,
+				  &IID_ID3D12Fence, (void **)&g_fence);
+    if (FAILED(hr))
+	I_Error("CreateFence failed");
+    g_fence_ev = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (!g_fence_ev)
+	I_Error("CreateEvent failed");
+
+    memset(&scd, 0, sizeof(scd));
+    scd.Width = WIN_W;
+    scd.Height = WIN_H;
+    scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    scd.SampleDesc.Count = 1;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.BufferCount = FRAME_COUNT;
+    scd.Scaling = DXGI_SCALING_STRETCH;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    hr = IDXGIFactory4_CreateSwapChainForHwnd(factory, (IUnknown *)g_queue,
+					      hwnd, &scd, NULL, NULL, &swap1);
+    if (FAILED(hr))
+	I_Error("CreateSwapChainForHwnd failed (0x%08lx)", (unsigned long)hr);
+    hr = IDXGISwapChain1_QueryInterface(swap1, &IID_IDXGISwapChain3,
+					(void **)&g_swap);
+    IDXGISwapChain1_Release(swap1);
+    if (FAILED(hr))
+	I_Error("IDXGISwapChain3 query failed");
+    IDXGIFactory4_MakeWindowAssociation(factory, hwnd, DXGI_MWA_NO_ALT_ENTER);
+    IDXGIFactory4_Release(factory);
+
+    for (i = 0; i < FRAME_COUNT; i++)
+    {
+	hr = IDXGISwapChain3_GetBuffer(g_swap, i, &IID_ID3D12Resource,
+				       (void **)&g_bb[i]);
+	if (FAILED(hr))
+	    I_Error("GetBuffer failed");
+	g_bb_state[i] = D3D12_RESOURCE_STATE_PRESENT;
+    }
+
+    g_tex_color = make_tex(GB_WIDTH, GB_HEIGHT, DXGI_FORMAT_R8G8B8A8_UNORM,
+			   L"GB_Color");
+    g_tex_depth = make_tex(GB_WIDTH, GB_HEIGHT, DXGI_FORMAT_R32_FLOAT,
+			   L"GB_Depth");
+    g_tex_normal = make_tex(GB_WIDTH, GB_HEIGHT, DXGI_FORMAT_R8G8B8A8_UNORM,
+			    L"GB_Normal");
+    g_tex_velocity = make_tex(GB_WIDTH, GB_HEIGHT, DXGI_FORMAT_R32G32_FLOAT,
+			      L"GB_Velocity");
+    g_up_color = make_upload(upload_bytes(GB_WIDTH, GB_HEIGHT, 4));
+    g_up_depth = make_upload(upload_bytes(GB_WIDTH, GB_HEIGHT, 4));
+    g_up_normal = make_upload(upload_bytes(GB_WIDTH, GB_HEIGHT, 4));
+    g_up_velocity = make_upload(upload_bytes(GB_WIDTH, GB_HEIGHT, 8));
+    g_up_present = make_upload(upload_bytes(WIN_W, WIN_H, 4));
+    if (!g_tex_color || !g_tex_depth || !g_tex_normal || !g_tex_velocity ||
+	!g_up_color || !g_up_depth || !g_up_normal || !g_up_velocity ||
+	!g_up_present)
 	I_Error("G-buffer textures failed");
 }
 
@@ -319,41 +486,38 @@ void I_UpdateNoBlit(void)
 {
 }
 
-static void upload_gbuffers(void)
-{
-    ID3D11DeviceContext_UpdateSubresource(g_ctx, (ID3D11Resource *)g_tex_color,
-					  0, NULL, GB_ColorRGBA(), GB_WIDTH * 4, 0);
-    ID3D11DeviceContext_UpdateSubresource(g_ctx, (ID3D11Resource *)g_tex_depth,
-					  0, NULL, GB_Depth(), GB_WIDTH * 4, 0);
-    ID3D11DeviceContext_UpdateSubresource(g_ctx, (ID3D11Resource *)g_tex_normal,
-					  0, NULL, GB_NormalRGBA(), GB_WIDTH * 4, 0);
-    ID3D11DeviceContext_UpdateSubresource(g_ctx, (ID3D11Resource *)g_tex_velocity,
-					  0, NULL, GB_VelocityRG(), GB_WIDTH * 8, 0);
-}
-
 void I_FinishUpdate(void)
 {
-    D3D11_MAPPED_SUBRESOURCE map;
-    HRESULT hr;
-    int y;
+    UINT idx;
+    ID3D12CommandList *lists[1];
 
     GB_ConvertColor(screens[0]);
     GB_EndFrame();
     GB_ComposePresent(g_present, WIN_W, WIN_H);
-    upload_gbuffers();
 
-    hr = ID3D11DeviceContext_Map(g_ctx, (ID3D11Resource *)g_staging, 0,
-				 D3D11_MAP_WRITE, 0, &map);
-    if (SUCCEEDED(hr))
-    {
-	for (y = 0; y < WIN_H; y++)
-	    memcpy((unsigned char *)map.pData + y * map.RowPitch,
-		   g_present + y * WIN_W * 4, WIN_W * 4);
-	ID3D11DeviceContext_Unmap(g_ctx, (ID3D11Resource *)g_staging, 0);
-	ID3D11DeviceContext_CopyResource(g_ctx, (ID3D11Resource *)g_bb,
-					 (ID3D11Resource *)g_staging);
-    }
-    IDXGISwapChain_Present(g_swap, 0, 0);
+    wait_gpu();
+    idx = IDXGISwapChain3_GetCurrentBackBufferIndex(g_swap);
+    ID3D12CommandAllocator_Reset(g_alloc);
+    ID3D12GraphicsCommandList_Reset(g_cmd, g_alloc, NULL);
+
+    upload_tex(g_tex_color, g_up_color, GB_ColorRGBA(),
+	       GB_WIDTH, GB_HEIGHT, 4, DXGI_FORMAT_R8G8B8A8_UNORM);
+    upload_tex(g_tex_depth, g_up_depth, GB_Depth(),
+	       GB_WIDTH, GB_HEIGHT, 4, DXGI_FORMAT_R32_FLOAT);
+    upload_tex(g_tex_normal, g_up_normal, GB_NormalRGBA(),
+	       GB_WIDTH, GB_HEIGHT, 4, DXGI_FORMAT_R8G8B8A8_UNORM);
+    upload_tex(g_tex_velocity, g_up_velocity, GB_VelocityRG(),
+	       GB_WIDTH, GB_HEIGHT, 8, DXGI_FORMAT_R32G32_FLOAT);
+
+    barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_COPY_DEST);
+    upload_tex(g_bb[idx], g_up_present, g_present,
+	       WIN_W, WIN_H, 4, DXGI_FORMAT_B8G8R8A8_UNORM);
+    barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_PRESENT);
+
+    ID3D12GraphicsCommandList_Close(g_cmd);
+    lists[0] = (ID3D12CommandList *)g_cmd;
+    ID3D12CommandQueue_ExecuteCommandLists(g_queue, 1, lists);
+    IDXGISwapChain3_Present(g_swap, 0, 0);
 }
 
 void I_ReadScreen(byte *scr)
@@ -381,19 +545,34 @@ void I_SetPalette(byte *palette)
 void I_ShutdownGraphics(void)
 {
     grab_mouse(0);
-    if (g_tex_velocity) ID3D11Texture2D_Release(g_tex_velocity);
-    if (g_tex_normal) ID3D11Texture2D_Release(g_tex_normal);
-    if (g_tex_depth) ID3D11Texture2D_Release(g_tex_depth);
-    if (g_tex_color) ID3D11Texture2D_Release(g_tex_color);
-    if (g_staging) ID3D11Texture2D_Release(g_staging);
-    if (g_bb) ID3D11Texture2D_Release(g_bb);
-    if (g_swap) IDXGISwapChain_Release(g_swap);
-    if (g_ctx) ID3D11DeviceContext_Release(g_ctx);
-    if (g_dev) ID3D11Device_Release(g_dev);
+    wait_gpu();
+    if (g_up_present) ID3D12Resource_Release(g_up_present);
+    if (g_up_velocity) ID3D12Resource_Release(g_up_velocity);
+    if (g_up_normal) ID3D12Resource_Release(g_up_normal);
+    if (g_up_depth) ID3D12Resource_Release(g_up_depth);
+    if (g_up_color) ID3D12Resource_Release(g_up_color);
+    if (g_tex_velocity) ID3D12Resource_Release(g_tex_velocity);
+    if (g_tex_normal) ID3D12Resource_Release(g_tex_normal);
+    if (g_tex_depth) ID3D12Resource_Release(g_tex_depth);
+    if (g_tex_color) ID3D12Resource_Release(g_tex_color);
+    if (g_bb[0]) ID3D12Resource_Release(g_bb[0]);
+    if (g_bb[1]) ID3D12Resource_Release(g_bb[1]);
+    if (g_swap) IDXGISwapChain3_Release(g_swap);
+    if (g_cmd) ID3D12GraphicsCommandList_Release(g_cmd);
+    if (g_alloc) ID3D12CommandAllocator_Release(g_alloc);
+    if (g_queue) ID3D12CommandQueue_Release(g_queue);
+    if (g_fence) ID3D12Fence_Release(g_fence);
+    if (g_fence_ev) CloseHandle(g_fence_ev);
+    if (g_dev) ID3D12Device_Release(g_dev);
+    g_up_present = g_up_velocity = g_up_normal = g_up_depth = g_up_color = NULL;
     g_tex_velocity = g_tex_normal = g_tex_depth = g_tex_color = NULL;
-    g_staging = g_bb = NULL;
+    g_bb[0] = g_bb[1] = NULL;
     g_swap = NULL;
-    g_ctx = NULL;
+    g_cmd = NULL;
+    g_alloc = NULL;
+    g_queue = NULL;
+    g_fence = NULL;
+    g_fence_ev = NULL;
     g_dev = NULL;
     if (g_hwnd)
     {
@@ -436,6 +615,6 @@ void I_InitGraphics(void)
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
     grab_mouse(1);
-    fprintf(stderr, "I_InitGraphics: D3D11 %dx%d (internal %dx%d)\n",
+    fprintf(stderr, "I_InitGraphics: D3D12CreateDevice %dx%d (internal %dx%d)\n",
 	    WIN_W, WIN_H, SCREENWIDTH, SCREENHEIGHT);
 }
