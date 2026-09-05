@@ -624,10 +624,13 @@ void I_FinishUpdate(void)
 	GB_HasScenePixels())
     {
 	barrier(g_tex_color, &g_st_color,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	barrier(g_tex_depth, &g_st_depth,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	barrier(g_tex_velocity, &g_st_velocity,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 	used_ngx = Ngx_Evaluate(g_cmd, g_tex_color, g_tex_depth,
