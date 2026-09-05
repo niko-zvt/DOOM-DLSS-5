@@ -262,31 +262,32 @@ int Ngx_Evaluate(void *cmdlist, void *color, void *depth, void *velocity,
 		 void *output, int reset)
 {
     ID3D12GraphicsCommandList *cl = (ID3D12GraphicsCommandList *)cmdlist;
+    NVSDK_NGX_D3D12_DLSS_Eval_Params ev;
     NVSDK_NGX_Result r;
 
     if (!g_handle || !cl || !color || !depth || !velocity || !output)
 	return 0;
 
-    NVSDK_NGX_Parameter_SetD3d12Resource(g_params, NVSDK_NGX_Parameter_Color,
-					 (ID3D12Resource *)color);
-    NVSDK_NGX_Parameter_SetD3d12Resource(g_params, NVSDK_NGX_Parameter_Depth,
-					 (ID3D12Resource *)depth);
-    NVSDK_NGX_Parameter_SetD3d12Resource(g_params, NVSDK_NGX_Parameter_MotionVectors,
-					 (ID3D12Resource *)velocity);
-    NVSDK_NGX_Parameter_SetD3d12Resource(g_params, NVSDK_NGX_Parameter_Output,
-					 (ID3D12Resource *)output);
-    NVSDK_NGX_Parameter_SetF(g_params, NVSDK_NGX_Parameter_Jitter_Offset_X, 0.0f);
-    NVSDK_NGX_Parameter_SetF(g_params, NVSDK_NGX_Parameter_Jitter_Offset_Y, 0.0f);
-    NVSDK_NGX_Parameter_SetF(g_params, NVSDK_NGX_Parameter_MV_Scale_X, 1.0f);
-    NVSDK_NGX_Parameter_SetF(g_params, NVSDK_NGX_Parameter_MV_Scale_Y, 1.0f);
-    NVSDK_NGX_Parameter_SetI(g_params, NVSDK_NGX_Parameter_Reset, reset ? 1 : 0);
-    NVSDK_NGX_Parameter_SetUI(g_params, NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, 320);
-    NVSDK_NGX_Parameter_SetUI(g_params, NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, 200);
+    memset(&ev, 0, sizeof(ev));
+    ev.Feature.pInColor = (ID3D12Resource *)color;
+    ev.Feature.pInOutput = (ID3D12Resource *)output;
+    ev.pInDepth = (ID3D12Resource *)depth;
+    ev.pInMotionVectors = (ID3D12Resource *)velocity;
+    ev.InJitterOffsetX = 0.0f;
+    ev.InJitterOffsetY = 0.0f;
+    ev.InReset = reset ? 1 : 0;
+    ev.InMVScaleX = 1.0f;
+    ev.InMVScaleY = 1.0f;
+    ev.InRenderSubrectDimensions.Width = 320;
+    ev.InRenderSubrectDimensions.Height = 200;
+    ev.InFrameTimeDeltaInMsec = 1000.0f / 35.0f;
 
-    r = NVSDK_NGX_D3D12_EvaluateFeature_C(cl, g_handle, g_params, NULL);
+    r = NGX_D3D12_EVALUATE_DLSS_EXT(cl, g_handle, g_params, &ev);
+    ID3D12GraphicsCommandList_ClearState(cl, NULL);
     if (NVSDK_NGX_FAILED(r))
     {
-	fprintf(stderr, "NGX: Evaluate failed (0x%08x)\n", (unsigned)r);
+	fprintf(stderr, "NGX: EVALUATE_DLSS_EXT failed (0x%08x %ls)\n",
+		(unsigned)r, GetNGXResultAsString(r));
 	return 0;
     }
     return 1;
