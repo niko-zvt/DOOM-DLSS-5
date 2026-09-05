@@ -39,6 +39,11 @@ rcsid[] = "$Id: r_plane.c,v 1.4 1997/02/03 16:47:55 b1 Exp $";
 #include "r_local.h"
 #include "r_sky.h"
 
+#ifdef _WIN32
+#include "gbuffer.h"
+static int gb_ceiling;
+#endif
+
 
 
 planefunction_t		floorfunc;
@@ -172,6 +177,14 @@ R_MapPlane
     ds_y = y;
     ds_x1 = x1;
     ds_x2 = x2;
+
+#ifdef _WIN32
+    {
+	float z = (float)distance / 65536.0f;
+	float ny = gb_ceiling ? -1.0f : 1.0f;
+	GB_WriteSpan(y, x1, x2, z, 0.0f, ny, 0.0f);
+    }
+#endif
 
     // high or low detail
     spanfunc ();	
@@ -413,6 +426,9 @@ void R_DrawPlanes (void)
 		    angle = (viewangle + xtoviewangle[x])>>ANGLETOSKYSHIFT;
 		    dc_x = x;
 		    dc_source = R_GetColumn(skytexture, angle);
+#ifdef _WIN32
+		    GB_SetColumn(x, 8192.0f, 0.0f, 1.0f, 0.0f, GB_KIND_SKY);
+#endif
 		    colfunc ();
 		}
 	    }
@@ -424,6 +440,9 @@ void R_DrawPlanes (void)
 				   flattranslation[pl->picnum],
 				   PU_STATIC);
 	
+#ifdef _WIN32
+	gb_ceiling = (pl->height > viewz);
+#endif
 	planeheight = abs(pl->height-viewz);
 	light = (pl->lightlevel >> LIGHTSEGSHIFT)+extralight;
 

@@ -41,6 +41,10 @@ rcsid[] = "$Id: r_things.c,v 1.5 1997/02/03 16:47:56 b1 Exp $";
 
 #include "doomstat.h"
 
+#ifdef _WIN32
+#include "gbuffer.h"
+#endif
+
 
 
 #define MINZ				(FRACUNIT*4)
@@ -376,6 +380,23 @@ void R_DrawMaskedColumn (column_t* column)
 	    dc_source = (byte *)column + 3;
 	    dc_texturemid = basetexturemid - (column->topdelta<<FRACBITS);
 	    // dc_source = (byte *)column + 3 - column->topdelta;
+
+#ifdef _WIN32
+	    {
+		float z;
+		int an;
+		if (spryscale <= 256)
+		    z = 8192.0f;
+		else
+		    z = (float)projection / (float)spryscale;
+		an = viewangle >> ANGLETOFINESHIFT;
+		GB_SetColumn(dc_x, z,
+			     -(float)finecosine[an] / 65536.0f,
+			     0.0f,
+			     -(float)finesine[an] / 65536.0f,
+			     GB_KIND_SPRITE);
+	    }
+#endif
 
 	    // Drawn by either R_DrawColumn
 	    //  or (SHADOW) R_DrawFuzzColumn.

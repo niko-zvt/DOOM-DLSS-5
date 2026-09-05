@@ -39,6 +39,27 @@ rcsid[] = "$Id: r_segs.c,v 1.3 1997/01/29 20:10:19 b1 Exp $";
 #include "r_local.h"
 #include "r_sky.h"
 
+#ifdef _WIN32
+#include "gbuffer.h"
+
+static void GB_WallColumn(int x, fixed_t scale)
+{
+    float z;
+    int an;
+
+    if (scale <= 256)
+	z = 8192.0f;
+    else
+	z = (float)projection / (float)scale;
+    an = rw_normalangle >> ANGLETOFINESHIFT;
+    GB_SetColumn(x, z,
+		 (float)finecosine[an] / 65536.0f,
+		 0.0f,
+		 (float)finesine[an] / 65536.0f,
+		 GB_KIND_WALL);
+}
+#endif
+
 
 // OPTIMIZE: closed two sided lines as single sided
 
@@ -176,6 +197,9 @@ R_RenderMaskedSegRange
 			
 	    sprtopscreen = centeryfrac - FixedMul(dc_texturemid, spryscale);
 	    dc_iscale = 0xffffffffu / (unsigned)spryscale;
+#ifdef _WIN32
+	    GB_WallColumn(dc_x, spryscale);
+#endif
 	    
 	    // draw the texture
 	    col = (column_t *)( 
@@ -274,6 +298,9 @@ void R_RenderSegLoop (void)
 	    dc_colormap = walllights[index];
 	    dc_x = rw_x;
 	    dc_iscale = 0xffffffffu / (unsigned)rw_scale;
+#ifdef _WIN32
+	    GB_WallColumn(rw_x, rw_scale);
+#endif
 	}
 	
 	// draw the wall tiers

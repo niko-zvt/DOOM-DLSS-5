@@ -28,6 +28,8 @@ static const char
 rcsid[] = "$Id: r_draw.c,v 1.4 1997/02/03 16:47:55 b1 Exp $";
 
 
+#include <stdint.h>
+
 #include "doomdef.h"
 
 #include "i_system.h"
@@ -35,6 +37,10 @@ rcsid[] = "$Id: r_draw.c,v 1.4 1997/02/03 16:47:55 b1 Exp $";
 #include "w_wad.h"
 
 #include "r_local.h"
+
+#ifdef _WIN32
+#include "gbuffer.h"
+#endif
 
 // Needs access to LFB (guess what).
 #include "v_video.h"
@@ -145,6 +151,9 @@ void R_DrawColumn (void)
 	frac += fracstep;
 	
     } while (count--); 
+#ifdef _WIN32
+    GB_WriteColumn(dc_x, dc_yl, dc_yh);
+#endif
 } 
 
 
@@ -365,6 +374,9 @@ void R_DrawFuzzColumn (void)
 
 	frac += fracstep; 
     } while (count--); 
+#ifdef _WIN32
+    GB_WriteColumn(dc_x, dc_yl, dc_yh);
+#endif
 } 
  
   
@@ -444,6 +456,9 @@ void R_DrawTranslatedColumn (void)
 	
 	frac += fracstep; 
     } while (count--); 
+#ifdef _WIN32
+    GB_WriteColumn(dc_x, dc_yl, dc_yh);
+#endif
 } 
 
 
@@ -461,7 +476,7 @@ void R_InitTranslationTables (void)
     int		i;
 	
     translationtables = Z_Malloc (256*3+255, PU_STATIC, 0);
-    translationtables = (byte *)(( (int)translationtables + 255 )& ~255);
+    translationtables = (byte *)(( (uintptr_t)translationtables + 255 )& ~(uintptr_t)255);
     
     // translate just the 16 green colors
     for (i=0 ; i<256 ; i++)
