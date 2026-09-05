@@ -31,8 +31,11 @@ void GB_Shutdown(void);
 
 void GB_BeginFrame(void);
 void GB_SetColumn(int x, float z, float nx, float ny, float nz, int kind);
+void GB_SetObjectMotion(float du, float dv);
 void GB_WriteColumn(int x, int yl, int yh);
 void GB_WriteSpan(int y, int x1, int x2, float z, float nx, float ny, float nz);
+void GB_RequestReset(void);
+int  GB_ConsumeReset(void);
 void GB_EndFrame(void);
 
 void GB_SetPaletteRGB(const unsigned char *rgb768);

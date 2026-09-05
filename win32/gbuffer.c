@@ -16,12 +16,16 @@ static unsigned char gb_color[GB_PIX * 4];
 static float         gb_depth[GB_PIX];
 static unsigned char gb_normal[GB_PIX * 4];
 static float         gb_velocity[GB_PIX * 2];
+static float         gb_obj_du[GB_PIX];
+static float         gb_obj_dv[GB_PIX];
 static unsigned char gb_palette[256 * 3];
 
 static float gb_col_z;
 static float gb_col_nx, gb_col_ny, gb_col_nz;
+static float gb_col_du, gb_col_dv;
 static int   gb_col_x = -1;
 static int   gb_debug_view = GB_VIEW_COLOR;
+static int   gb_reset;
 
 static int     gb_have_prev;
 static fixed_t gb_prev_viewx;
@@ -36,6 +40,8 @@ static void gb_clear_aux(void)
     memset(gb_depth, 0, sizeof(gb_depth));
     memset(gb_normal, 0, sizeof(gb_normal));
     memset(gb_velocity, 0, sizeof(gb_velocity));
+    memset(gb_obj_du, 0, sizeof(gb_obj_du));
+    memset(gb_obj_dv, 0, sizeof(gb_obj_dv));
     for (i = 0; i < GB_PIX; i++)
 	gb_normal[i * 4 + 2] = 128;
 }
@@ -45,7 +51,10 @@ void GB_Init(void)
     memset(gb_color, 0, sizeof(gb_color));
     gb_clear_aux();
     gb_have_prev = 0;
+    gb_reset = 1;
     gb_debug_view = GB_VIEW_COLOR;
+    gb_col_du = 0.0f;
+    gb_col_dv = 0.0f;
 }
 
 void GB_Shutdown(void)
@@ -56,6 +65,8 @@ void GB_BeginFrame(void)
 {
     gb_clear_aux();
     gb_col_x = -1;
+    gb_col_du = 0.0f;
+    gb_col_dv = 0.0f;
 }
 
 void GB_SetColumn(int x, float z, float nx, float ny, float nz, int kind)
@@ -66,6 +77,27 @@ void GB_SetColumn(int x, float z, float nx, float ny, float nz, int kind)
     gb_col_nx = nx;
     gb_col_ny = ny;
     gb_col_nz = nz;
+    gb_col_du = 0.0f;
+    gb_col_dv = 0.0f;
+}
+
+void GB_SetObjectMotion(float du, float dv)
+{
+    gb_col_du = du;
+    gb_col_dv = dv;
+}
+
+void GB_RequestReset(void)
+{
+    gb_reset = 1;
+    gb_have_prev = 0;
+}
+
+int GB_ConsumeReset(void)
+{
+    int r = gb_reset;
+    gb_reset = 0;
+    return r;
 }
 
 static void gb_write_pixel(int x, int y, float z, float nx, float ny, float nz)
@@ -78,6 +110,8 @@ static void gb_write_pixel(int x, int y, float z, float nx, float ny, float nz)
 
     i = y * GB_WIDTH + x;
     gb_depth[i] = z;
+    gb_obj_du[i] = gb_col_du;
+    gb_obj_dv[i] = gb_col_dv;
 
     r = (int)((nx * 0.5f + 0.5f) * 255.0f + 0.5f);
     g = (int)((ny * 0.5f + 0.5f) * 255.0f + 0.5f);
@@ -113,6 +147,8 @@ void GB_WriteSpan(int y, int x1, int x2, float z, float nx, float ny, float nz)
 	x1 = 0;
     if (x2 >= GB_WIDTH)
 	x2 = GB_WIDTH - 1;
+    gb_col_du = 0.0f;
+    gb_col_dv = 0.0f;
     for (x = x1; x <= x2; x++)
 	gb_write_pixel(x, y, z, nx, ny, nz);
 }
@@ -188,8 +224,9 @@ void GB_EndFrame(void)
 
 		prev_sx = (float)centerx + vx * (proj / vz);
 		prev_sy = (float)centery - relz * (proj / vz);
-		gb_velocity[i * 2 + 0] = (float)x - prev_sx;
-		gb_velocity[i * 2 + 1] = (float)y - prev_sy;
+		/* Pixel delta at 320x200. +X right, +Y down (DOOM / NGX MVLowRes). */
+		gb_velocity[i * 2 + 0] = (float)x - prev_sx + gb_obj_du[i];
+		gb_velocity[i * 2 + 1] = (float)y - prev_sy + gb_obj_dv[i];
 	    }
 	}
     }
