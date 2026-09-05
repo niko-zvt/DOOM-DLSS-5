@@ -23,10 +23,73 @@ int Ngx_Wanted(void)
 
 #ifdef WINDOOM_HAS_NGX
 
-static int g_ready;
+static int g_inited;
 static NVSDK_NGX_Handle *g_handle;
 static NVSDK_NGX_Parameter *g_params;
 static ID3D12Device *g_dev;
+
+static void ngx_teardown(void)
+{
+    if (g_handle)
+	NVSDK_NGX_D3D12_ReleaseFeature(g_handle);
+    g_handle = NULL;
+    if (g_params)
+	NVSDK_NGX_D3D12_DestroyParameters(g_params);
+    g_params = NULL;
+    if (g_dev)
+	NVSDK_NGX_D3D12_Shutdown1(g_dev);
+    g_dev = NULL;
+    g_inited = 0;
+}
+
+static int ngx_check_dlss(void)
+{
+    int needs_driver = 0;
+    unsigned int min_maj = 0;
+    unsigned int min_min = 0;
+    int available = 0;
+    NVSDK_NGX_Result r_drv;
+    NVSDK_NGX_Result r_maj;
+    NVSDK_NGX_Result r_min;
+    NVSDK_NGX_Result r_av;
+    NVSDK_NGX_Result feat = NVSDK_NGX_Result_Fail;
+
+    r_drv = NVSDK_NGX_Parameter_GetI(g_params,
+		NVSDK_NGX_Parameter_SuperSampling_NeedsUpdatedDriver,
+		&needs_driver);
+    r_maj = NVSDK_NGX_Parameter_GetUI(g_params,
+		NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMajor,
+		&min_maj);
+    r_min = NVSDK_NGX_Parameter_GetUI(g_params,
+		NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMinor,
+		&min_min);
+    if (r_drv == NVSDK_NGX_Result_Success &&
+	r_maj == NVSDK_NGX_Result_Success &&
+	r_min == NVSDK_NGX_Result_Success)
+    {
+	if (needs_driver)
+	{
+	    fprintf(stderr,
+		    "NGX: driver too old, need %u.%u, using nearest\n",
+		    min_maj, min_min);
+	    return 0;
+	}
+	fprintf(stderr, "NGX: min driver %u.%u\n", min_maj, min_min);
+    }
+
+    r_av = NVSDK_NGX_Parameter_GetI(g_params,
+		NVSDK_NGX_Parameter_SuperSampling_Available, &available);
+    if (r_av != NVSDK_NGX_Result_Success || !available)
+    {
+	NVSDK_NGX_Parameter_GetI(g_params,
+		NVSDK_NGX_Parameter_SuperSampling_FeatureInitResult,
+		(int *)&feat);
+	fprintf(stderr, "NGX: DLSS unavailable (0x%08x %ls), using nearest\n",
+		(unsigned)feat, GetNGXResultAsString(feat));
+	return 0;
+    }
+    return 1;
+}
 
 int Ngx_Init(void *device, void *queue)
 {
@@ -34,7 +97,7 @@ int Ngx_Init(void *device, void *queue)
     wchar_t path[MAX_PATH];
 
     (void)queue;
-    g_ready = 0;
+    g_inited = 0;
     g_handle = NULL;
     g_params = NULL;
     g_dev = (ID3D12Device *)device;
@@ -52,8 +115,9 @@ int Ngx_Init(void *device, void *queue)
 			     NVSDK_NGX_Version_API);
     if (NVSDK_NGX_FAILED(r))
     {
-	fprintf(stderr, "NGX: init failed (0x%08x), using nearest\n",
-		(unsigned)r);
+	fprintf(stderr, "NGX: init failed (0x%08x %ls), using nearest\n",
+		(unsigned)r, GetNGXResultAsString(r));
+	g_dev = NULL;
 	return 0;
     }
 
@@ -62,31 +126,29 @@ int Ngx_Init(void *device, void *queue)
     {
 	fprintf(stderr, "NGX: no capability parameters, using nearest\n");
 	NVSDK_NGX_D3D12_Shutdown1(g_dev);
+	g_dev = NULL;
+	return 0;
+    }
+
+    if (!ngx_check_dlss())
+    {
+	ngx_teardown();
 	return 0;
     }
 
     fprintf(stderr, "NGX: runtime ready (feature created on first evaluate)\n");
-    g_ready = 1;
+    g_inited = 1;
     return 1;
 }
 
 void Ngx_Shutdown(void)
 {
-    if (g_handle && g_params)
-	NVSDK_NGX_D3D12_ReleaseFeature(g_handle);
-    g_handle = NULL;
-    if (g_params)
-	NVSDK_NGX_D3D12_DestroyParameters(g_params);
-    g_params = NULL;
-    if (g_dev)
-	NVSDK_NGX_D3D12_Shutdown1(g_dev);
-    g_dev = NULL;
-    g_ready = 0;
+    ngx_teardown();
 }
 
 int Ngx_Ready(void)
 {
-    return g_ready;
+    return g_inited;
 }
 
 static int ngx_ensure_feature(ID3D12GraphicsCommandList *cl)
@@ -117,7 +179,7 @@ static int ngx_ensure_feature(ID3D12GraphicsCommandList *cl)
     {
 	fprintf(stderr, "NGX: CreateFeature failed (0x%08x)\n", (unsigned)r);
 	g_handle = NULL;
-	g_ready = 0;
+	g_inited = 0;
 	return 0;
     }
     return 1;
@@ -129,7 +191,7 @@ int Ngx_Evaluate(void *cmdlist, void *color, void *depth, void *velocity,
     ID3D12GraphicsCommandList *cl = (ID3D12GraphicsCommandList *)cmdlist;
     NVSDK_NGX_Result r;
 
-    if (!g_ready || !cl || !color || !depth || !velocity || !output)
+    if (!g_inited || !cl || !color || !depth || !velocity || !output)
 	return 0;
     if (!ngx_ensure_feature(cl))
 	return 0;
