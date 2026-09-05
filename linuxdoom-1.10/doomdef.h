@@ -81,7 +81,9 @@ typedef enum
 //  and unfinished. Default is synchronous.
 // Experimental asynchronous timer based is
 //  handled by SNDINTR. 
+#ifndef _WIN32
 #define SNDSERV  1
+#endif
 //#define SNDINTR  1
 
 
