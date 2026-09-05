@@ -13,4 +13,6 @@ if not exist "%EXE%" (
   exit /b 1
 )
 
+for %%I in ("%EXE%") do set EXEDIR=%%~dpI
+cd /d "%EXEDIR%"
 "%EXE%" %*
