@@ -91,6 +91,31 @@ static int ngx_check_dlss(void)
     return 1;
 }
 
+static void ngx_log_optimal(void)
+{
+    unsigned int opt_w = 0;
+    unsigned int opt_h = 0;
+    unsigned int max_w = 0;
+    unsigned int max_h = 0;
+    unsigned int min_w = 0;
+    unsigned int min_h = 0;
+    float sharp = 0.0f;
+    NVSDK_NGX_Result r;
+
+    r = NGX_DLSS_GET_OPTIMAL_SETTINGS(g_params, 1280, 800,
+		NVSDK_NGX_PerfQuality_Value_UltraPerformance,
+		&opt_w, &opt_h, &max_w, &max_h, &min_w, &min_h, &sharp);
+    if (NVSDK_NGX_FAILED(r))
+    {
+	fprintf(stderr, "NGX: optimal settings query failed (0x%08x %ls)\n",
+		(unsigned)r, GetNGXResultAsString(r));
+	return;
+    }
+    fprintf(stderr,
+	    "NGX: optimal %ux%u (min %ux%u max %ux%u), create stays 320x200\n",
+	    opt_w, opt_h, min_w, min_h, max_w, max_h);
+}
+
 int Ngx_Init(void *device, void *queue)
 {
     NVSDK_NGX_Result r;
@@ -135,6 +160,7 @@ int Ngx_Init(void *device, void *queue)
 	ngx_teardown();
 	return 0;
     }
+    ngx_log_optimal();
 
     fprintf(stderr, "NGX: runtime ready (feature created on first evaluate)\n");
     g_inited = 1;
