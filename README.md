@@ -1,110 +1,74 @@
 # WinDoom
 
-Windows x64 port of Linux DOOM 1.10. Same 320x200 software renderer,
-shown in a D3D12 window at 1280x800. Color, depth, normals, and motion
-are written out each frame.
-
-Present folders under `build-win\Release\`:
-
-- `windoom-original` — nearest 4x, no NVIDIA
-- `windoom-ngx-dlss3.5` — Ray Reconstruction (`--ngx-dlss3.5`)
-- `windoom-ngx-dlss4` — Super Resolution, preset K (`--ngx-dlss4`)
-- `windoom-ngx-dlss4.5` — Super Resolution, preset L (`--ngx-dlss4.5`)
-- `windoom-ngx-dlss5` — same SR; DLSS5-Swapper Native adds NR
-- `windoom-anime4k` — Anime4K Fast Mode C (`--anime4k`)
-- `windoom-fsr2` — AMD FSR 2.2 320→1280 (`--fsr2`)
+Windows x64 port of Linux DOOM 1.10. The game still draws 320x200;
+the window is 1280x800 (D3D12). Each frame also writes depth, normals,
+and motion.
 
 Copyright (C) 2026 Nikolai Zhivotenko. GPLv2, see LICENSE.TXT.
-Original game code: id Software, 1993-1996.
+Original game code: id Software, 1993-1996. Carmack's note: README.TXT.
 
-Carmack's old note is in README.TXT.
+## First run
 
-## Build
+1. Put an IWAD in `wads/` (`freedoom2.wad`, `doom2.wad`, …).
+2. In PowerShell (from this folder):
 
-    .\build.cmd
+       .\build.cmd
+       .\play-windoom.cmd
 
-Nearest only (`windoom-original`). In PowerShell use `.\`
-(cmd.exe can run `build.cmd` as-is).
+`cmd.exe` can run `build.cmd` without `.\`.
 
-    .\build.cmd --ngx-dlss3.5
-    .\build.cmd --ngx-dlss4
-    .\build.cmd --ngx-dlss4.5
-    .\build.cmd --ngx-dlss5
-    .\build.cmd --anime4k
-    .\build.cmd --fsr2
-    .\build.cmd --all
+## Present modes
 
-Flags can be combined. `--ngx-dlss*` fetches NVIDIA/DLSS into gitignored
-`third_party/ngx/` and copies `nvngx_dlss.dll` (and `nvngx_dlssd.dll` if
-present) into the four NGX folders. `--all` stages original + Anime4K +
-FSR2 + all four NGX folders. `--fsr2` fetches FidelityFX-FSR2 v2.2.1
-into gitignored `third_party/fsr2/`.
+`build.cmd` copies `windoom.exe` into a folder per mode:
+
+| Folder | Flag | What you see |
+|---|---|---|
+| `windoom-original` | *(default)* | Nearest 4x |
+| `windoom-ngx-dlss3.5` | `--ngx-dlss3.5` | DLSS Ray Reconstruction |
+| `windoom-ngx-dlss4` | `--ngx-dlss4` | DLSS Super Resolution, preset K |
+| `windoom-ngx-dlss4.5` | `--ngx-dlss4.5` | DLSS Super Resolution, preset L |
+| `windoom-ngx-dlss5` | `--ngx-dlss5` | Same as 4.5, then DLSS 5 NR if Swapper is installed |
+| `windoom-anime4k` | `--anime4k` | Anime4K Fast Mode C |
+| `windoom-fsr2` | `--fsr2` | AMD FSR 2.2 |
+
+       .\build.cmd --all
+       .\play-windoom.cmd --ngx-dlss4.5
+
+`--all` builds every folder. Flags can be combined. NVIDIA and FSR2
+SDKs are fetched into gitignored `third_party/` (not in git).
 Details: `win32/README-NGX.md`, `win32/README-ANIME4K.md`,
 `win32/README-FSR2.md`.
 
-Or cmake by hand:
+`play-windoom.cmd` starts the exe from that folder so DLLs stay local.
+Unknown args are passed through (`-playdemo`, `-nodlss`, `-nofsr2`,
+`-color`, `-depth`, `-normal`, `-velocity`, `-export <dir>`).
 
-    cmake -S . -B build-win -A x64 -DWINDOOM_NGX=OFF -DWINDOOM_ANIME4K=OFF -DWINDOOM_FSR2=OFF
-    cmake --build build-win --config Release
+       .\play-windoom.cmd --ngx-dlss4 -nodlss
 
-## Run
+## Screencast and PNG export
 
-Put an IWAD in `wads/` (`freedoom2.wad`, `doom2.wad`, etc.), then:
+       .\screencast-windoom.cmd
 
-    .\play-windoom.cmd
-    .\play-windoom.cmd --ngx-dlss4
-    .\play-windoom.cmd --ngx-dlss4.5
-    .\play-windoom.cmd --ngx-dlss3.5
-    .\play-windoom.cmd --ngx-dlss5
-    .\play-windoom.cmd --anime4k
-    .\play-windoom.cmd --fsr2
+Plays `compare.lmp` once per mode (needs `--all` and the demo in
+`build-win\Release`). Windows open one at a time.
 
-Each flag starts `windoom.exe` from its folder so local DLLs and
-shaders load. Extra game args (`-playdemo`, `-nodlss`, `-nofsr2`,
-`-depth`, `-normal`, `-velocity`, `-color`, `-export <dir>`) are
-forwarded.
+       .\screencast-windoom.cmd --export D:\frames
 
-    .\play-windoom.cmd --ngx-dlss4 -nodlss
+Also writes every frame as `D:\frames\<folder>\f000001.png`, …
+Same thing for one run:
 
-forces nearest even when NGX is built in.
+       .\play-windoom.cmd --ngx-dlss5 -playdemo compare -export D:\frames\dlss5
 
-    .\play-windoom.cmd --ngx-dlss4.5 -playdemo compare -depth
+`-export` runs one game tic per frame (35 fps timeline; playback is
+just slower). PNGs match the window, including HUD and F1–F4 views.
 
-records / plays a demo on the depth debug view (nearest compose).
-F1–F4 still switch the same views at runtime.
+       ffmpeg -framerate 35 -i D:\frames\windoom-ngx-dlss5\f%06d.png -c:v libx264 -pix_fmt yuv420p dlss5.mp4
 
-    .\screencast-windoom.cmd
+## DLSS 5 Swapper
 
-runs that queue for a desktop recording: all present modes in
-`-color`, then `--original` in `-depth` / `-normal` / `-velocity`.
-Needs `.\build.cmd --all` and `compare.lmp` in `build-win\Release`.
-
-    .\screencast-windoom.cmd --export D:\frames
-
-does the same but also dumps every presented frame as PNG, one
-folder per run: `D:\frames\windoom-ngx-dlss4\f000001.png`,
-`f000002.png`, ... (folders `windoom-original`,
-`windoom-ngx-dlss3.5`, `-dlss4`, `-dlss4.5`, `-dlss5`,
-`windoom-anime4k`, `windoom-fsr2`, `windoom-original-depth`,
-`-normal`, `-velocity`). Under the hood it passes the game arg
-`-export <dir>`, which also works alone:
-
-    .\play-windoom.cmd --ngx-dlss5 -playdemo compare -export D:\frames\dlss5
-
-`-export` forces one game tic per rendered frame, so the sequence is
-an exact 35 fps timeline no matter how long the PNG encode takes
-(the demo just plays back slower). What is written is the presented
-back buffer: bezel, HUD state (Insert) and F2–F4 debug views included.
-Assemble a run with ffmpeg:
-
-    ffmpeg -framerate 35 -i D:\frames\windoom-ngx-dlss5\f%06d.png -c:v libx264 -pix_fmt yuv420p dlss5.mp4
-
-## DLSS5-Swapper
-
-Add `build-win\Release\windoom-ngx-dlss5` (not the Release root).
-The exe is DirectX 12. Swapper should offer **Native**.
-Do not put your own `dxgi.dll` in that folder first.
-Details: `win32/README-NGX.md`.
+Point Swapper at `build-win\Release\windoom-ngx-dlss5` (not the
+Release root). DirectX 12, **Native**. Do not drop your own
+`dxgi.dll` in that folder first. See `win32/README-NGX.md`.
 
 ## Keys
 
@@ -116,14 +80,15 @@ Details: `win32/README-NGX.md`.
     Y / N         quit prompt
     F1 F2 F3 F4   color, depth, normals, velocity
     Insert        show / hide status bar
-    -color / -depth / -normal / -velocity
-                  same views from the command line (for demos)
+
+`-color` / `-depth` / `-normal` / `-velocity` select the same views
+from the command line (useful with `-playdemo`).
 
 ## Tree
 
     linuxdoom-1.10/   original sources
-    win32/            Windows video, sound, G-buffers, NGX, Anime4K, FSR2
+    win32/            Windows video, sound, G-buffers, present paths
     wads/             IWADs
     CMakeLists.txt    `windoom` target
 
-Buffer formats: `win32/README-GBUFFER.md`.
+G-buffer formats: `win32/README-GBUFFER.md`.

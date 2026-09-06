@@ -1,97 +1,58 @@
 # NGX / DLSS
 
-Copyright (C) 2026 Nikolai Zhivotenko. GPLv2, see LICENSE.TXT.
+WinDoom is GPLv2. NVIDIA DLSS is **not** in this repo. `.\build.cmd
+--ngx-dlss4` (or 3.5 / 4.5 / 5 / `--all`) downloads the SDK into
+gitignored `third_party/ngx/` and copies `nvngx_dlss.dll` next to
+the exe. A plain `.\build.cmd` is nearest only, even if that folder
+already exists.
 
-WinDoom is GPLv2. NVIDIA DLSS / NGX is not in this tree. Default
-build is nearest 4x. NGX is local only: `third_party/ngx/` (gitignored)
-and `nvngx_dlss.dll` (plus `nvngx_dlssd.dll` when present) next to the exe.
+One NGX binary, four folders. A one-line `ngx.mode` file picks the path:
 
-One NGX exe (`WINDOOM_NGX=ON`), four staged folders. The folder's
-`ngx.mode` file picks the path:
-
-| Folder | `ngx.mode` | Meaning |
+| Folder | `ngx.mode` | Path |
 |---|---|---|
-| `windoom-ngx-dlss3.5` | `rr` | Ray Reconstruction (`CREATE_DLSSD_EXT`) |
-| `windoom-ngx-dlss4` | `k` | Super Resolution, preset **K** |
-| `windoom-ngx-dlss4.5` | `l` | Super Resolution, preset **L** |
-| `windoom-ngx-dlss5` | `dlss5` | Super Resolution (SDK default / L) |
+| `windoom-ngx-dlss3.5` | `rr` | Ray Reconstruction |
+| `windoom-ngx-dlss4` | `k` | Super Resolution, preset K |
+| `windoom-ngx-dlss4.5` | `l` | Super Resolution, preset L |
+| `windoom-ngx-dlss5` | `dlss5` | Same SR as 4.5; then DLSS 5 NR if RenoDX is present |
 
-Command-line overrides: `-ngx-rr`, `-ngx-k`, `-ngx-l`.
+Overrides (optional): `-ngx-rr`, `-ngx-k`, `-ngx-l`. Skip NGX:
+`.\play-windoom.cmd --ngx-dlss4 -nodlss`.
 
-## Build
+Input is 320x200, output 1280x800, no jitter. The status bar is
+copied on after DLSS so it stays sharp.
 
-    build.cmd                   nearest, no NVIDIA
-    build.cmd --ngx-dlss3.5
-    build.cmd --ngx-dlss4
-    build.cmd --ngx-dlss4.5
-    build.cmd --ngx-dlss5
-    build.cmd --all
+## 4 / 4.5 / 5
 
-`--ngx-dlss*` runs `fetch-ngx.cmd` (NVIDIA/DLSS tag v310.7.0 into
-`third_party/ngx/`) then cmake with `-DWINDOOM_NGX=ON`. A plain
-`build.cmd` always passes `-DWINDOOM_NGX=OFF`, even if that folder
-already exists. `--all` stages original + Anime4K + FSR2 + all four NGX
-folders.
-
-Manual:
-
-    fetch-ngx.cmd
-    cmake -S . -B build-win -A x64 -DWINDOOM_NGX=ON
-    cmake --build build-win --config Release
-
-Need `include/nvsdk_ngx.h` and `nvsdk_ngx_d.lib` (or `_s` / `nvsdk_ngx`).
-`WINDOOM_NGX=ON` without a SDK is a configure error.
-
-    play-windoom.cmd --ngx-dlss4 -nodlss
-
-skips NGX at runtime.
-
-Input 320x200, output 1280x800, jitter 0. HUD (depth == 0) is
-nearest-blitted after evaluate.
-
-## Presets 4 and 4.5
-
-Before `CREATE_DLSS_EXT`, every quality slot gets the same hint
-(`UltraPerformance`, `Quality`, `Balanced`, `Performance`, `DLAA`):
-
-- mode `k` → `NVSDK_NGX_DLSS_Hint_Render_Preset_K` (transformer DLSS 4)
-- mode `l` → `NVSDK_NGX_DLSS_Hint_Render_Preset_L` (default Ultra Perf / 4.5)
+4 and 4.5 are one Super Resolution pass (320→1280). 5 does that
+**same** 4.5 pass first (preset L). If `renodx-dlss5.addon64` sits
+next to the exe, a second pass (DLAA) runs on that image so Swapper
+NR can refine it. Color for that pass is never a nearest 4x stretch.
+Without the addon, the 5 folder looks like 4.5.
 
 ## Ray Reconstruction (3.5)
 
-DOOM is a software renderer: there is no path-traced specular. RR still
-runs with what we have:
+DOOM has no path-traced lighting. RR still gets color, depth, motion,
+and normals. Missing buffers are faked (black specular, rough=1).
+If create/eval fails, the log says so and the exe falls back to
+preset K.
 
-- color, depth, motion (same as SR)
-- normals from `g_tex_normal`
-- diffuse albedo = a copy of color
-- specular albedo = black 320×200
-- roughness = constant ~1 (fully matte, unpacked)
+## Swapper (Native)
 
-If create or evaluate fails, the log says so and the exe falls back to
-SR preset K so the folder is not dead.
+1. Build with NGX (`.\build.cmd --ngx-dlss5`).
+2. In DLSS5-Swapper add `build-win\Release\windoom-ngx-dlss5`.
+3. DirectX 12, 64-bit, **Native**. Do not put your own `dxgi.dll`
+   in that folder first.
 
-## Demo keys
+Feeder also works. Native is the intended route.
 
-F1–F4 still switch color / depth / normals / velocity. The same views
-can be selected from the command line after `GB_Init`:
+## Manual cmake
 
-    play-windoom.cmd --fsr2 -playdemo compare -depth
-    play-windoom.cmd --ngx-dlss4 -playdemo compare -normal
-    play-windoom.cmd --ngx-dlss4.5 -playdemo compare -velocity
-    play-windoom.cmd --ngx-dlss3.5 -playdemo compare -color
+    .\fetch-ngx.cmd
+    cmake -S . -B build-win -A x64 -DWINDOOM_NGX=ON
+    cmake --build build-win --config Release
 
-NGX / FSR2 / Anime4K only run on the color view. Debug views use nearest
-compose so a demo can be recorded in an aux buffer.
+Needs `include/nvsdk_ngx.h` and an `nvsdk_ngx*.lib`. `WINDOOM_NGX=ON`
+without a SDK is a configure error. SDK tag: NVIDIA/DLSS v310.7.0.
 
-## Swapper Native (`windoom-ngx-dlss5`)
-
-1. `fetch-ngx.cmd` and a Release build with NGX found (`WINDOOM_HAS_NGX`).
-2. `nvngx_dlss.dll` beside `windoom.exe` in `windoom-ngx-dlss5`.
-3. DLSS5-Swapper: Add folder → `build-win\Release\windoom-ngx-dlss5`.
-4. Expect DirectX 12, 64-bit, **Native**.
-5. Install Native. Do not drop your own `dxgi.dll` in that folder first.
-
-Feeder still works if you pick it. Native is the intended route.
-If `renodx-dlss5.addon64` sits next to the exe, this folder uses hi-res
-DLAA evaluate (HUD is blitted after NR).
+Debug views (F1–F4 / `-depth` etc.) skip DLSS and use nearest so a
+demo can record an aux buffer. See the root `README.md` for keys.

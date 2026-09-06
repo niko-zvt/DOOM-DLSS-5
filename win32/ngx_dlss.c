@@ -37,13 +37,17 @@ int Ngx_Wanted(void)
 #ifdef WINDOOM_HAS_NGX
 
 static int g_inited;
-static int g_hires;
+static int g_stack;
+static int g_dlaa_failed;
 static int g_mode;
 static int g_using_rr;
 static int g_want_rr;
 static NVSDK_NGX_Handle *g_handle;
+static NVSDK_NGX_Handle *g_handle_dlaa;
 static NVSDK_NGX_Parameter *g_params;
 static ID3D12Device *g_dev;
+static ID3D12Resource *g_tex_mid;
+static D3D12_RESOURCE_STATES g_st_mid;
 static ID3D12Resource *g_tex_spec;
 static ID3D12Resource *g_tex_rough;
 static ID3D12Resource *g_up_spec;
@@ -124,12 +128,23 @@ static int ngx_renodx_present(const wchar_t *dir)
     return GetFileAttributesW(addon) != INVALID_FILE_ATTRIBUTES;
 }
 
+static void ngx_release_mid(void)
+{
+    if (g_tex_mid)
+	ID3D12Resource_Release(g_tex_mid);
+    g_tex_mid = NULL;
+}
+
 static void ngx_release_feature(void)
 {
     if (g_handle)
 	NVSDK_NGX_D3D12_ReleaseFeature(g_handle);
+    if (g_handle_dlaa)
+	NVSDK_NGX_D3D12_ReleaseFeature(g_handle_dlaa);
     g_handle = NULL;
+    g_handle_dlaa = NULL;
     g_using_rr = 0;
+    ngx_release_mid();
 }
 
 static void ngx_release_const(void)
@@ -160,7 +175,8 @@ static void ngx_teardown(void)
 	NVSDK_NGX_D3D12_Shutdown1(g_dev);
     g_dev = NULL;
     g_inited = 0;
-    g_hires = 0;
+    g_stack = 0;
+    g_dlaa_failed = 0;
     g_want_rr = 0;
 }
 
@@ -258,6 +274,22 @@ static void ngx_apply_sr_hint(void)
 	ngx_pin_sr_preset(NVSDK_NGX_DLSS_Hint_Render_Preset_K);
     else if (g_mode == NGX_MODE_L)
 	ngx_pin_sr_preset(NVSDK_NGX_DLSS_Hint_Render_Preset_L);
+    else if (g_mode == NGX_MODE_DLSS5)
+    {
+	/* Same SR as 4.5. Leave the DLAA slot unpinned for pass 2 / NR. */
+	NVSDK_NGX_Parameter_SetUI(g_params,
+	    NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance,
+	    NVSDK_NGX_DLSS_Hint_Render_Preset_L);
+	NVSDK_NGX_Parameter_SetUI(g_params,
+	    NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality,
+	    NVSDK_NGX_DLSS_Hint_Render_Preset_L);
+	NVSDK_NGX_Parameter_SetUI(g_params,
+	    NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced,
+	    NVSDK_NGX_DLSS_Hint_Render_Preset_L);
+	NVSDK_NGX_Parameter_SetUI(g_params,
+	    NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance,
+	    NVSDK_NGX_DLSS_Hint_Render_Preset_L);
+    }
 }
 
 static ID3D12Resource *ngx_make_tex(UINT w, UINT h, DXGI_FORMAT fmt)
@@ -279,6 +311,31 @@ static ID3D12Resource *ngx_make_tex(UINT w, UINT h, DXGI_FORMAT fmt)
     if (FAILED(ID3D12Device_CreateCommittedResource(
 	    g_dev, &heap, D3D12_HEAP_FLAG_NONE, &desc,
 	    D3D12_RESOURCE_STATE_COPY_DEST, NULL,
+	    &IID_ID3D12Resource, (void **)&res)))
+	return NULL;
+    return res;
+}
+
+static ID3D12Resource *ngx_make_uav_tex(UINT w, UINT h, DXGI_FORMAT fmt)
+{
+    D3D12_HEAP_PROPERTIES heap;
+    D3D12_RESOURCE_DESC desc;
+    ID3D12Resource *res = NULL;
+
+    memset(&heap, 0, sizeof(heap));
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    memset(&desc, 0, sizeof(desc));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = w;
+    desc.Height = h;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = fmt;
+    desc.SampleDesc.Count = 1;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (FAILED(ID3D12Device_CreateCommittedResource(
+	    g_dev, &heap, D3D12_HEAP_FLAG_NONE, &desc,
+	    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL,
 	    &IID_ID3D12Resource, (void **)&res)))
 	return NULL;
     return res;
@@ -423,27 +480,15 @@ static int ngx_create_sr(ID3D12GraphicsCommandList *cl)
 
     memset(&create, 0, sizeof(create));
     ngx_apply_sr_hint();
-    if (g_hires)
-    {
-	create.Feature.InWidth = 1280;
-	create.Feature.InHeight = 800;
-	create.Feature.InTargetWidth = 1280;
-	create.Feature.InTargetHeight = 800;
-	create.Feature.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_DLAA;
-	create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
-    }
-    else
-    {
-	create.Feature.InWidth = 320;
-	create.Feature.InHeight = 200;
-	create.Feature.InTargetWidth = 1280;
-	create.Feature.InTargetHeight = 800;
-	create.Feature.InPerfQualityValue =
-	    NVSDK_NGX_PerfQuality_Value_UltraPerformance;
-	create.InFeatureCreateFlags =
-	    NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
-	    NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
-    }
+    create.Feature.InWidth = 320;
+    create.Feature.InHeight = 200;
+    create.Feature.InTargetWidth = 1280;
+    create.Feature.InTargetHeight = 800;
+    create.Feature.InPerfQualityValue =
+	NVSDK_NGX_PerfQuality_Value_UltraPerformance;
+    create.InFeatureCreateFlags =
+	NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
+	NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
 
     r = NGX_D3D12_CREATE_DLSS_EXT(cl, 1, 1, &g_handle, g_params, &create);
     if (NVSDK_NGX_FAILED(r) || !g_handle)
@@ -454,7 +499,51 @@ static int ngx_create_sr(ID3D12GraphicsCommandList *cl)
 	return 0;
     }
     g_using_rr = 0;
-    fprintf(stderr, "NGX: DLSS SR created (%s)\n", ngx_mode_name(g_mode));
+    fprintf(stderr, "NGX: DLSS SR created (%s)\n",
+	    (g_mode == NGX_MODE_DLSS5) ? "l" : ngx_mode_name(g_mode));
+    return 1;
+}
+
+static int ngx_ensure_mid(void)
+{
+    if (g_tex_mid)
+	return 1;
+    g_tex_mid = ngx_make_uav_tex(1280, 800, DXGI_FORMAT_B8G8R8A8_UNORM);
+    if (!g_tex_mid)
+    {
+	fprintf(stderr, "NGX: stack mid UAV failed, presenting SR only\n");
+	return 0;
+    }
+    g_st_mid = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    return 1;
+}
+
+static int ngx_create_dlaa(ID3D12GraphicsCommandList *cl)
+{
+    NVSDK_NGX_DLSS_Create_Params create;
+    NVSDK_NGX_Result r;
+
+    if (g_handle_dlaa)
+	return 1;
+    memset(&create, 0, sizeof(create));
+    create.Feature.InWidth = 1280;
+    create.Feature.InHeight = 800;
+    create.Feature.InTargetWidth = 1280;
+    create.Feature.InTargetHeight = 800;
+    create.Feature.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_DLAA;
+    create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+
+    r = NGX_D3D12_CREATE_DLSS_EXT(cl, 1, 1, &g_handle_dlaa, g_params, &create);
+    if (NVSDK_NGX_FAILED(r) || !g_handle_dlaa)
+    {
+	fprintf(stderr,
+		"NGX: CREATE_DLSS_EXT DLAA failed (0x%08x %ls), "
+		"presenting SR only\n",
+		(unsigned)r, GetNGXResultAsString(r));
+	g_handle_dlaa = NULL;
+	return 0;
+    }
+    fprintf(stderr, "NGX: DLSS DLAA created (dlss5)\n");
     return 1;
 }
 
@@ -503,7 +592,8 @@ static void ngx_fallback_sr_k(void)
     ngx_release_feature();
     g_want_rr = 0;
     g_mode = NGX_MODE_K;
-    g_hires = 0;
+    g_stack = 0;
+    g_dlaa_failed = 1;
 }
 
 static int ngx_create_feature(ID3D12GraphicsCommandList *cl)
@@ -528,8 +618,10 @@ int Ngx_Init(void *device, void *queue)
     wchar_t path[MAX_PATH];
 
     g_inited = 0;
-    g_hires = 0;
+    g_stack = 0;
+    g_dlaa_failed = 0;
     g_handle = NULL;
+    g_handle_dlaa = NULL;
     g_params = NULL;
     g_using_rr = 0;
     g_dev = (ID3D12Device *)device;
@@ -573,16 +665,16 @@ int Ngx_Init(void *device, void *queue)
     }
     ngx_log_optimal();
 
-    g_hires = (g_mode == NGX_MODE_DLSS5) && ngx_renodx_present(path);
-    if (g_hires)
+    g_stack = (g_mode == NGX_MODE_DLSS5) && ngx_renodx_present(path);
+    if (g_stack)
 	fprintf(stderr,
-		"NGX: RenoDX addon present; hi-res DLAA + evaluate "
+		"NGX: RenoDX addon present; SR preset L then DLAA/NR "
 		"(HUD is blitted after NR)\n");
 
     (void)queue;
     fprintf(stderr,
 	    "NGX: runtime ready (%s, feature created on first evaluate)\n",
-	    g_want_rr ? "rr" : (g_hires ? "dlss5-dlaa" : "dlss-upscale"));
+	    g_want_rr ? "rr" : (g_stack ? "dlss5-stack" : "dlss-upscale"));
     g_inited = 1;
     return 1;
 }
@@ -599,7 +691,7 @@ int Ngx_Ready(void)
 
 int Ngx_WantsHiRes(void)
 {
-    return g_inited && g_hires && !g_want_rr;
+    return g_inited && g_stack && !g_want_rr && !g_dlaa_failed;
 }
 
 int Ngx_ShowEvalOutput(void)
@@ -614,19 +706,6 @@ static int ngx_eval_sr(ID3D12GraphicsCommandList *cl,
 {
     NVSDK_NGX_D3D12_DLSS_Eval_Params ev;
     NVSDK_NGX_Result r;
-    unsigned sub_w;
-    unsigned sub_h;
-
-    if (g_hires)
-    {
-	sub_w = 1280;
-	sub_h = 800;
-    }
-    else
-    {
-	sub_w = 320;
-	sub_h = 200;
-    }
 
     memset(&ev, 0, sizeof(ev));
     ev.Feature.pInColor = color;
@@ -636,31 +715,56 @@ static int ngx_eval_sr(ID3D12GraphicsCommandList *cl,
     ev.InJitterOffsetX = 0.0f;
     ev.InJitterOffsetY = 0.0f;
     ev.InReset = reset ? 1 : 0;
-    ev.InRenderSubrectDimensions.Width = sub_w;
-    ev.InRenderSubrectDimensions.Height = sub_h;
-    if (g_hires)
-    {
-	static int hires_warm;
-
-	if (hires_warm < 8)
-	{
-	    ev.InReset = 1;
-	    hires_warm++;
-	}
-	ev.InMVScaleX = 4.0f;
-	ev.InMVScaleY = 4.0f;
-    }
-    else
-    {
-	ev.InMVScaleX = 1.0f;
-	ev.InMVScaleY = 1.0f;
-    }
+    ev.InRenderSubrectDimensions.Width = 320;
+    ev.InRenderSubrectDimensions.Height = 200;
+    ev.InMVScaleX = 1.0f;
+    ev.InMVScaleY = 1.0f;
     ev.InFrameTimeDeltaInMsec = 1000.0f / 35.0f;
 
     r = NGX_D3D12_EVALUATE_DLSS_EXT(cl, g_handle, g_params, &ev);
     if (NVSDK_NGX_FAILED(r))
     {
 	fprintf(stderr, "NGX: EVALUATE_DLSS_EXT failed (0x%08x %ls)\n",
+		(unsigned)r, GetNGXResultAsString(r));
+	return 0;
+    }
+    return 1;
+}
+
+static int ngx_eval_dlaa(ID3D12GraphicsCommandList *cl,
+			 ID3D12Resource *color, ID3D12Resource *depth,
+			 ID3D12Resource *velocity, ID3D12Resource *output,
+			 int reset)
+{
+    NVSDK_NGX_D3D12_DLSS_Eval_Params ev;
+    NVSDK_NGX_Result r;
+    static int dlaa_warm;
+
+    memset(&ev, 0, sizeof(ev));
+    ev.Feature.pInColor = color;
+    ev.Feature.pInOutput = output;
+    ev.pInDepth = depth;
+    ev.pInMotionVectors = velocity;
+    ev.InJitterOffsetX = 0.0f;
+    ev.InJitterOffsetY = 0.0f;
+    ev.InReset = reset ? 1 : 0;
+    ev.InRenderSubrectDimensions.Width = 1280;
+    ev.InRenderSubrectDimensions.Height = 800;
+    if (dlaa_warm < 8)
+    {
+	ev.InReset = 1;
+	dlaa_warm++;
+    }
+    ev.InMVScaleX = 4.0f;
+    ev.InMVScaleY = 4.0f;
+    ev.InFrameTimeDeltaInMsec = 1000.0f / 35.0f;
+
+    r = NGX_D3D12_EVALUATE_DLSS_EXT(cl, g_handle_dlaa, g_params, &ev);
+    if (NVSDK_NGX_FAILED(r))
+    {
+	fprintf(stderr,
+		"NGX: EVALUATE_DLSS_EXT DLAA failed (0x%08x %ls), "
+		"presenting SR only\n",
 		(unsigned)r, GetNGXResultAsString(r));
 	return 0;
     }
@@ -742,6 +846,77 @@ int Ngx_Evaluate(void *cmdlist, void *color, void *depth, void *velocity,
 		       reset);
 }
 
+static void ngx_copy_mid_to_out(ID3D12GraphicsCommandList *cl,
+				ID3D12Resource *output)
+{
+    D3D12_RESOURCE_STATES out_st = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
+    ngx_barrier(cl, g_tex_mid, &g_st_mid, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    ngx_barrier(cl, output, &out_st, D3D12_RESOURCE_STATE_COPY_DEST);
+    ID3D12GraphicsCommandList_CopyResource(cl, output, g_tex_mid);
+    ngx_barrier(cl, output, &out_st, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+}
+
+int Ngx_EvaluateStack(void *cmdlist, void *color, void *depth, void *velocity,
+		      void *depth_hi, void *velocity_hi, void *normal,
+		      void *output, int reset)
+{
+    ID3D12GraphicsCommandList *cl = (ID3D12GraphicsCommandList *)cmdlist;
+
+    (void)normal;
+    if (!g_inited || !cl || !color || !depth || !velocity || !output)
+	return 0;
+    if (!depth_hi || !velocity_hi)
+	return Ngx_Evaluate(cmdlist, color, depth, velocity, normal,
+			    output, reset);
+    if (!ngx_create_feature(cl))
+    {
+	g_inited = 0;
+	return 0;
+    }
+    if (g_using_rr)
+	return Ngx_Evaluate(cmdlist, color, depth, velocity, normal,
+			    output, reset);
+
+    if (g_dlaa_failed ||
+	!ngx_ensure_mid() ||
+	!ngx_create_dlaa(cl))
+    {
+	g_dlaa_failed = 1;
+	return ngx_eval_sr(cl, (ID3D12Resource *)color,
+			   (ID3D12Resource *)depth,
+			   (ID3D12Resource *)velocity,
+			   (ID3D12Resource *)output, reset);
+    }
+
+    ngx_barrier(cl, g_tex_mid, &g_st_mid, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (!ngx_eval_sr(cl, (ID3D12Resource *)color, (ID3D12Resource *)depth,
+		     (ID3D12Resource *)velocity, g_tex_mid, reset))
+    {
+	g_inited = 0;
+	return 0;
+    }
+    {
+	D3D12_RESOURCE_BARRIER uav;
+
+	memset(&uav, 0, sizeof(uav));
+	uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+	uav.UAV.pResource = g_tex_mid;
+	ID3D12GraphicsCommandList_ResourceBarrier(cl, 1, &uav);
+    }
+    ngx_barrier(cl, g_tex_mid, &g_st_mid,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    if (ngx_eval_dlaa(cl, g_tex_mid, (ID3D12Resource *)depth_hi,
+		      (ID3D12Resource *)velocity_hi,
+		      (ID3D12Resource *)output, reset))
+	return 1;
+
+    g_dlaa_failed = 1;
+    ngx_copy_mid_to_out(cl, (ID3D12Resource *)output);
+    return 1;
+}
+
 #else /* !WINDOOM_HAS_NGX */
 
 int Ngx_Init(void *device, void *queue)
@@ -778,6 +953,22 @@ int Ngx_Evaluate(void *cmdlist, void *color, void *depth, void *velocity,
     (void)color;
     (void)depth;
     (void)velocity;
+    (void)normal;
+    (void)output;
+    (void)reset;
+    return 0;
+}
+
+int Ngx_EvaluateStack(void *cmdlist, void *color, void *depth, void *velocity,
+		      void *depth_hi, void *velocity_hi, void *normal,
+		      void *output, int reset)
+{
+    (void)cmdlist;
+    (void)color;
+    (void)depth;
+    (void)velocity;
+    (void)depth_hi;
+    (void)velocity_hi;
     (void)normal;
     (void)output;
     (void)reset;

@@ -1049,22 +1049,24 @@ void I_FinishUpdate(void)
 	GB_GetDebugView() == GB_VIEW_COLOR &&
 	GB_HasScenePixels())
     {
-	if (Ngx_WantsHiRes() && g_tex_color_hi)
+	if (Ngx_WantsHiRes() && g_tex_depth_hi && g_tex_velocity_hi)
 	{
 	    nearest_upscale_ngx();
-	    barrier(g_tex_color_hi, &g_st_color_hi,
-		    D3D12_RESOURCE_STATE_COPY_DEST);
 	    barrier(g_tex_depth_hi, &g_st_depth_hi,
 		    D3D12_RESOURCE_STATE_COPY_DEST);
 	    barrier(g_tex_velocity_hi, &g_st_velocity_hi,
 		    D3D12_RESOURCE_STATE_COPY_DEST);
-	    upload_tex(g_tex_color_hi, g_up_color_hi, g_color_hi,
-		       WIN_W, WIN_H, 4, DXGI_FORMAT_R8G8B8A8_UNORM);
 	    upload_tex(g_tex_depth_hi, g_up_depth_hi, g_depth_hi,
 		       WIN_W, WIN_H, 4, DXGI_FORMAT_R32_FLOAT);
 	    upload_tex(g_tex_velocity_hi, g_up_velocity_hi, g_vel_hi,
 		       WIN_W, WIN_H, 8, DXGI_FORMAT_R32G32_FLOAT);
-	    barrier(g_tex_color_hi, &g_st_color_hi,
+	    barrier(g_tex_color, &g_st_color,
+		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	    barrier(g_tex_depth, &g_st_depth,
+		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	    barrier(g_tex_velocity, &g_st_velocity,
 		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
 		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	    barrier(g_tex_depth_hi, &g_st_depth_hi,
@@ -1077,9 +1079,10 @@ void I_FinishUpdate(void)
 		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
 		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	    barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-	    used_ngx = Ngx_Evaluate(g_cmd, g_tex_color_hi, g_tex_depth_hi,
-				    g_tex_velocity_hi, g_tex_normal, g_tex_out,
-				    reset);
+	    used_ngx = Ngx_EvaluateStack(g_cmd, g_tex_color, g_tex_depth,
+					g_tex_velocity, g_tex_depth_hi,
+					g_tex_velocity_hi, g_tex_normal,
+					g_tex_out, reset);
 	}
 	else
 	{
@@ -1327,7 +1330,7 @@ void I_InitGraphics(void)
     else if (Fsr2_Ready())
 	fprintf(stderr, "present mode: fsr2\n");
     else if (Ngx_WantsHiRes())
-	fprintf(stderr, "present mode: dlss5-dlaa\n");
+	fprintf(stderr, "present mode: dlss5-stack\n");
     else if (Ngx_Ready())
 	fprintf(stderr, "present mode: dlss-upscale\n");
     else
