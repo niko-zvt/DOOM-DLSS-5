@@ -87,8 +87,8 @@ if (Test-Path $Header) {
 $Dll = Get-ChildItem -Path $Dest -Recurse -Filter 'nvngx_dlss.dll' -ErrorAction SilentlyContinue |
     Select-Object -First 1
 $ExeDirs = @(
-    (Join-Path $Root 'build-win\Release'),
-    (Join-Path $Root 'build-win')
+    (Join-Path $Root 'build-win\Release\windoom-dlss'),
+    (Join-Path $Root 'build-win\Release\windoom-dlss5')
 )
 if ($Dll) {
     foreach ($dir in $ExeDirs) {
@@ -103,6 +103,6 @@ if ($Dll) {
 
 Write-Host ""
 Write-Host "Next:"
-Write-Host "  cmake -S . -B build-win -A x64"
-Write-Host "  cmake --build build-win --config Release"
+Write-Host "  .\build.cmd --dlss-on"
+Write-Host "  .\build.cmd --dlss5"
 Write-Host "CMake will pick up third_party\ngx automatically."
