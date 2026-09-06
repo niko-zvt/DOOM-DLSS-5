@@ -1,7 +1,10 @@
 # third_party
 
-This tree is for **local** copies of code that is not GPLv2.
+Local copies of code that is not GPLv2. These folders are gitignored.
+Do not commit them.
 
-`ngx/` is created by `fetch-ngx.cmd`. It is gitignored on purpose.
-Do not commit NVIDIA headers, libs, or `nvngx_dlss.dll` into this
-repository. See `win32/README-NGX.md`.
+| Path | How it gets here | Notes |
+|---|---|---|
+| `ngx/` | `.\fetch-ngx.cmd` | NVIDIA DLSS SDK. See `win32/README-NGX.md` |
+| `fsr2/` | `.\fetch-fsr2.cmd` | AMD FSR 2.2. See `win32/README-FSR2.md` |
+| `anime4k/` | in-tree GLSL only | MIT. See `win32/README-ANIME4K.md` |

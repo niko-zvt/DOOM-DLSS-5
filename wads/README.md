@@ -1,11 +1,11 @@
 # wads/
 
-IWADs go here. Typical names:
+Drop an IWAD here. Typical names:
 
-    freedoom1.wad
     freedoom2.wad
-    doom.wad
+    freedoom1.wad
     doom2.wad
+    doom.wad
     doom1.wad
 
 `play-windoom.cmd` sets `DOOMWADDIR` to this folder.
