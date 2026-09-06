@@ -1,7 +1,10 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
-cd /d "%~dp0"
-if not defined DOOMWADDIR set DOOMWADDIR=%~dp0wads
+REM Capture before the parse loop: "shift" also shifts %0, so %~dp0 would
+REM later resolve against the last argument (e.g. an -export path).
+set ROOT=%~dp0
+cd /d "%ROOT%"
+if not defined DOOMWADDIR set DOOMWADDIR=%ROOT%wads
 if not defined HOME set HOME=%USERPROFILE%
 
 set MODE=original
@@ -49,7 +52,7 @@ shift
 goto parse
 
 :parsed
-set EXE=%~dp0build-win\Release\windoom-%MODE%\windoom.exe
+set EXE=%ROOT%build-win\Release\windoom-%MODE%\windoom.exe
 if not exist "%EXE%" (
   echo windoom.exe not found in windoom-%MODE%. Build first:
   echo   .\build.cmd
@@ -65,10 +68,10 @@ if not exist "%EXE%" (
 
 REM CWD stays Release so -playdemo compare.lmp and similar relative
 REM files still resolve. DLLs load from the exe folder, not CWD.
-set RUNDIR=%~dp0build-win\Release
+set RUNDIR=%ROOT%build-win\Release
 if exist "%RUNDIR%" (
   cd /d "%RUNDIR%"
 ) else (
-  cd /d "%~dp0"
+  cd /d "%ROOT%"
 )
 "%EXE%"%ARGS%
