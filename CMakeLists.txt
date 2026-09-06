@@ -82,6 +82,7 @@ add_executable(windoom
   win32/i_video_win.c
   win32/ngx_dlss.c
   win32/anime4k.c
+  win32/fsr2.c
 )
 
 target_include_directories(windoom PRIVATE
@@ -121,11 +122,22 @@ target_link_libraries(windoom PRIVATE
 
 option(WINDOOM_NGX "Link NVIDIA NGX (needs a local SDK; off by default)" OFF)
 option(WINDOOM_ANIME4K "Compile Anime4K Fast present path (no NVIDIA)" OFF)
+option(WINDOOM_FSR2 "Compile AMD FSR 2.2 present path (needs fetched sources)" OFF)
 set(NGX_SDK_DIR "" CACHE PATH "NVIDIA NGX SDK root (headers and lib)")
 
-if(WINDOOM_NGX AND WINDOOM_ANIME4K)
+set(_wd_present 0)
+if(WINDOOM_NGX)
+  math(EXPR _wd_present "${_wd_present}+1")
+endif()
+if(WINDOOM_ANIME4K)
+  math(EXPR _wd_present "${_wd_present}+1")
+endif()
+if(WINDOOM_FSR2)
+  math(EXPR _wd_present "${_wd_present}+1")
+endif()
+if(_wd_present GREATER 1)
   message(FATAL_ERROR
-    "WINDOOM_NGX and WINDOOM_ANIME4K cannot both be ON. "
+    "WINDOOM_NGX, WINDOOM_ANIME4K, and WINDOOM_FSR2 cannot be combined. "
     "They each own present. Build separate folders via build.cmd.")
 endif()
 
@@ -156,5 +168,18 @@ if(WINDOOM_NGX)
       "or pass -DNGX_SDK_DIR=...")
   endif()
 else()
-  message(STATUS "NGX disabled. Use build.cmd --dlss-on / --anime4k.")
+  message(STATUS "NGX disabled. Use build.cmd --ngx-dlss3.5 / --ngx-dlss4 / --ngx-dlss4.5 / --ngx-dlss5 / --anime4k / --fsr2.")
+endif()
+
+if(WINDOOM_FSR2)
+  enable_language(CXX)
+  include("${CMAKE_SOURCE_DIR}/cmake/FSR2.cmake")
+  message(STATUS "FSR2 2.2.1 enabled")
+  target_compile_definitions(windoom PRIVATE WINDOOM_HAS_FSR2)
+  set_source_files_properties(win32/fsr2.c PROPERTIES LANGUAGE CXX)
+  set_target_properties(windoom PROPERTIES LINKER_LANGUAGE CXX)
+  if(MSVC)
+    target_compile_options(windoom PRIVATE /EHsc)
+  endif()
+  target_link_libraries(windoom PRIVATE ffx_fsr2_api ffx_fsr2_dx12)
 endif()

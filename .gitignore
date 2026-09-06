@@ -110,3 +110,6 @@ wads/*.WAD
 /third_party/ngx/
 nvngx*.dll
 nvsdk_ngx*
+
+# --- AMD FidelityFX FSR2 sources (local copies only) ---
+/third_party/fsr2/

@@ -40,6 +40,10 @@ static const char rcsid[] = "$Id: r_main.c,v 1.5 1997/02/03 22:45:12 b1 Exp $";
 #include "r_local.h"
 #include "r_sky.h"
 
+#ifdef _WIN32
+#include "fsr2.h"
+#endif
+
 
 
 
@@ -877,6 +881,9 @@ void R_SetupFrame (player_t* player)
 void R_RenderPlayerView (player_t* player)
 {	
     R_SetupFrame (player);
+#ifdef _WIN32
+    Fsr2_ApplyRasterJitter();
+#endif
 
     // Clear buffers.
     R_ClearClipSegs ();
@@ -901,5 +908,8 @@ void R_RenderPlayerView (player_t* player)
     R_DrawMasked ();
 
     // Check for new console commands.
-    NetUpdate ();				
+    NetUpdate ();
+#ifdef _WIN32
+    Fsr2_RestoreCamera();
+#endif
 }
