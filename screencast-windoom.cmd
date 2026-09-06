@@ -14,6 +14,7 @@ if /I "%~1"=="--export" (
     goto usage
   )
   for %%I in ("%~2") do set EXPORT=%%~fI
+  if "!EXPORT:~-1!"=="\" set EXPORT=!EXPORT:~0,-1!
   shift
   shift
   goto parse
