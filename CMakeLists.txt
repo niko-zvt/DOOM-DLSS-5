@@ -81,6 +81,7 @@ add_executable(windoom
   win32/i_system_win.c
   win32/i_video_win.c
   win32/ngx_dlss.c
+  win32/anime4k.c
 )
 
 target_include_directories(windoom PRIVATE
@@ -119,7 +120,20 @@ target_link_libraries(windoom PRIVATE
 )
 
 option(WINDOOM_NGX "Link NVIDIA NGX (needs a local SDK; off by default)" OFF)
+option(WINDOOM_ANIME4K "Compile Anime4K Fast present path (no NVIDIA)" OFF)
 set(NGX_SDK_DIR "" CACHE PATH "NVIDIA NGX SDK root (headers and lib)")
+
+if(WINDOOM_NGX AND WINDOOM_ANIME4K)
+  message(FATAL_ERROR
+    "WINDOOM_NGX and WINDOOM_ANIME4K cannot both be ON. "
+    "They each own present. Build separate folders via build.cmd.")
+endif()
+
+if(WINDOOM_ANIME4K)
+  message(STATUS "Anime4K Fast enabled")
+  target_compile_definitions(windoom PRIVATE WINDOOM_HAS_ANIME4K)
+  target_link_libraries(windoom PRIVATE d3dcompiler)
+endif()
 
 if(WINDOOM_NGX)
   if(NOT NGX_SDK_DIR AND EXISTS "${CMAKE_SOURCE_DIR}/third_party/ngx/include/nvsdk_ngx.h")
@@ -142,5 +156,5 @@ if(WINDOOM_NGX)
       "or pass -DNGX_SDK_DIR=...")
   endif()
 else()
-  message(STATUS "NGX disabled (nearest present). Use build.cmd --dlss-on to enable.")
+  message(STATUS "NGX disabled. Use build.cmd --dlss-on / --anime4k.")
 endif()

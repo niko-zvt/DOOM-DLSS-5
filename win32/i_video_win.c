@@ -22,6 +22,9 @@
 #include "v_video.h"
 #include "gbuffer.h"
 #include "ngx_dlss.h"
+#include "anime4k.h"
+
+extern int viewheight;
 
 #define WIN_SCALE 4
 #define WIN_W (SCREENWIDTH * WIN_SCALE)
@@ -47,21 +50,33 @@ static ID3D12Resource *g_tex_depth;
 static ID3D12Resource *g_tex_normal;
 static ID3D12Resource *g_tex_velocity;
 static ID3D12Resource *g_tex_out;
+static ID3D12Resource *g_tex_color_hi;
+static ID3D12Resource *g_tex_depth_hi;
+static ID3D12Resource *g_tex_velocity_hi;
 static D3D12_RESOURCE_STATES g_st_color;
 static D3D12_RESOURCE_STATES g_st_depth;
 static D3D12_RESOURCE_STATES g_st_normal;
 static D3D12_RESOURCE_STATES g_st_velocity;
 static D3D12_RESOURCE_STATES g_st_out;
+static D3D12_RESOURCE_STATES g_st_color_hi;
+static D3D12_RESOURCE_STATES g_st_depth_hi;
+static D3D12_RESOURCE_STATES g_st_velocity_hi;
 static ID3D12Resource *g_up_color;
 static ID3D12Resource *g_up_depth;
 static ID3D12Resource *g_up_normal;
 static ID3D12Resource *g_up_velocity;
+static ID3D12Resource *g_up_color_hi;
+static ID3D12Resource *g_up_depth_hi;
+static ID3D12Resource *g_up_velocity_hi;
 static ID3D12Resource *g_up_present;
 static ID3D12Resource *g_readback;
 static D3D12_RESOURCE_STATES g_bb_state[FRAME_COUNT];
 
 static unsigned char g_present[WIN_W * WIN_H * 4];
 static unsigned char g_palette[768];
+static unsigned char g_color_hi[WIN_W * WIN_H * 4];
+static float g_depth_hi[WIN_W * WIN_H];
+static float g_vel_hi[WIN_W * WIN_H * 2];
 
 static int xlatekey(WPARAM vk)
 {
@@ -217,6 +232,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
     }
 }
 
+static void check_device(const char *where)
+{
+    HRESULT hr;
+
+    if (!g_dev)
+	return;
+    hr = ID3D12Device_GetDeviceRemovedReason(g_dev);
+    if (FAILED(hr))
+	I_Error("D3D12 device removed at %s (0x%08lx)",
+		where, (unsigned long)hr);
+}
+
 static void wait_gpu(void)
 {
     UINT64 v;
@@ -231,6 +258,7 @@ static void wait_gpu(void)
 	ID3D12Fence_SetEventOnCompletion(g_fence, v, g_fence_ev);
 	WaitForSingleObject(g_fence_ev, INFINITE);
     }
+    check_device("wait_gpu");
 }
 
 static void barrier(ID3D12Resource *res, D3D12_RESOURCE_STATES *cur,
@@ -248,6 +276,69 @@ static void barrier(ID3D12Resource *res, D3D12_RESOURCE_STATES *cur,
     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     ID3D12GraphicsCommandList_ResourceBarrier(g_cmd, 1, &b);
     *cur = next;
+}
+
+static void uav_barrier(ID3D12Resource *res)
+{
+    D3D12_RESOURCE_BARRIER b;
+
+    if (!res)
+	return;
+    memset(&b, 0, sizeof(b));
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    b.UAV.pResource = res;
+    ID3D12GraphicsCommandList_ResourceBarrier(g_cmd, 1, &b);
+}
+
+static void copy_tex_to_tex(ID3D12Resource *src, ID3D12Resource *dst)
+{
+    D3D12_TEXTURE_COPY_LOCATION dst_loc;
+    D3D12_TEXTURE_COPY_LOCATION src_loc;
+
+    memset(&dst_loc, 0, sizeof(dst_loc));
+    dst_loc.pResource = dst;
+    dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    memset(&src_loc, 0, sizeof(src_loc));
+    src_loc.pResource = src;
+    src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    ID3D12GraphicsCommandList_CopyTextureRegion(g_cmd, &dst_loc, 0, 0, 0,
+						&src_loc, NULL);
+}
+
+static void copy_tex_rect(ID3D12Resource *src, ID3D12Resource *dst,
+			  UINT src_x, UINT src_y, UINT dst_x, UINT dst_y,
+			  UINT w, UINT h)
+{
+    D3D12_TEXTURE_COPY_LOCATION dst_loc;
+    D3D12_TEXTURE_COPY_LOCATION src_loc;
+    D3D12_BOX box;
+
+    if (!src || !dst || w < 1 || h < 1)
+	return;
+    if (src_x + w > (UINT)WIN_W || src_y + h > (UINT)WIN_H)
+	return;
+    if (dst_x + w > (UINT)WIN_W || dst_y + h > (UINT)WIN_H)
+	return;
+    memset(&dst_loc, 0, sizeof(dst_loc));
+    dst_loc.pResource = dst;
+    dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    memset(&src_loc, 0, sizeof(src_loc));
+    src_loc.pResource = src;
+    src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    box.left = src_x;
+    box.top = src_y;
+    box.front = 0;
+    box.right = src_x + w;
+    box.bottom = src_y + h;
+    box.back = 1;
+    ID3D12GraphicsCommandList_CopyTextureRegion(g_cmd, &dst_loc, dst_x, dst_y,
+						0, &src_loc, &box);
+}
+
+static void copy_tex_rows(ID3D12Resource *src, ID3D12Resource *dst,
+			  UINT y, UINT h)
+{
+    copy_tex_rect(src, dst, 0, y, 0, y, (UINT)WIN_W, h);
 }
 
 static ID3D12Resource *make_tex(UINT w, UINT h, DXGI_FORMAT fmt,
@@ -444,6 +535,234 @@ static void upload_tex(ID3D12Resource *dst, ID3D12Resource *upload,
 						&src_loc, NULL);
 }
 
+static void overlay_hud_on_bb(ID3D12Resource *dst)
+{
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
+    D3D12_TEXTURE_COPY_LOCATION dst_loc;
+    D3D12_TEXTURE_COPY_LOCATION src_loc;
+    D3D12_RESOURCE_DESC desc;
+    D3D12_BOX box;
+    UINT num_rows;
+    UINT64 row_size;
+    UINT64 total;
+    unsigned char *mapped = NULL;
+    const unsigned char *color;
+    const float *depth;
+    int sx, sy, x0, x1, dx, dy, x, y;
+
+    color = GB_ColorRGBA();
+    depth = GB_Depth();
+    if (!dst || !color || !depth)
+	return;
+
+    memset(&desc, 0, sizeof(desc));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = WIN_W;
+    desc.Height = WIN_H;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    ID3D12Device_GetCopyableFootprints(g_dev, &desc, 0, 1, 0,
+				       &fp, &num_rows, &row_size, &total);
+    if (FAILED(ID3D12Resource_Map(g_up_present, 0, NULL, (void **)&mapped)))
+	return;
+
+    memset(&dst_loc, 0, sizeof(dst_loc));
+    dst_loc.pResource = dst;
+    dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    memset(&src_loc, 0, sizeof(src_loc));
+    src_loc.pResource = g_up_present;
+    src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src_loc.PlacedFootprint = fp;
+
+    for (sy = 0; sy < GB_HEIGHT; sy++)
+    {
+	sx = 0;
+	while (sx < GB_WIDTH)
+	{
+	    while (sx < GB_WIDTH &&
+		   depth[sy * GB_WIDTH + sx] != 0.0f)
+		sx++;
+	    x0 = sx;
+	    while (sx < GB_WIDTH &&
+		   depth[sy * GB_WIDTH + sx] == 0.0f)
+		sx++;
+	    x1 = sx;
+	    if (x1 <= x0)
+		break;
+	    dy = sy * WIN_SCALE;
+	    for (y = 0; y < WIN_SCALE; y++)
+	    {
+		for (x = x0; x < x1; x++)
+		{
+		    const unsigned char *s = color + (sy * GB_WIDTH + x) * 4;
+		    int i;
+
+		    dx = x * WIN_SCALE;
+		    for (i = 0; i < WIN_SCALE; i++)
+		    {
+			unsigned char *d = mapped + fp.Offset +
+			    (UINT)(dy + y) * fp.Footprint.RowPitch +
+			    (UINT)(dx + i) * 4;
+
+			d[0] = s[2];
+			d[1] = s[1];
+			d[2] = s[0];
+			d[3] = 255;
+		    }
+		}
+	    }
+	    box.left = (UINT)(x0 * WIN_SCALE);
+	    box.top = (UINT)dy;
+	    box.front = 0;
+	    box.right = (UINT)(x1 * WIN_SCALE);
+	    box.bottom = (UINT)(dy + WIN_SCALE);
+	    box.back = 1;
+	    ID3D12GraphicsCommandList_CopyTextureRegion(
+		g_cmd, &dst_loc, box.left, box.top, 0, &src_loc, &box);
+	}
+    }
+    ID3D12Resource_Unmap(g_up_present, 0, NULL);
+}
+
+static void blit_statusbar(ID3D12Resource *dst)
+{
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
+    D3D12_TEXTURE_COPY_LOCATION dst_loc;
+    D3D12_TEXTURE_COPY_LOCATION src_loc;
+    D3D12_RESOURCE_DESC desc;
+    D3D12_BOX box;
+    UINT num_rows;
+    UINT64 row_size;
+    UINT64 total;
+    unsigned char *mapped = NULL;
+    const unsigned char *color;
+    int x, y, sx, sy;
+    int st_y = GB_HEIGHT - 32;
+    int dst_y;
+
+    if (!dst || viewheight <= 0 || viewheight >= GB_HEIGHT)
+	return;
+    /* Status bar is ST_Y=168, not viewheight (144). 3D sits at
+     * viewwindowy..viewwindowy+viewheight-1 (12..155 at screenblocks 9). */
+    st_y = SCREENHEIGHT - 32;
+    dst_y = st_y * WIN_SCALE;
+    if (dst_y >= WIN_H)
+	return;
+    color = GB_ColorRGBA();
+    if (!color)
+	return;
+
+    memset(&desc, 0, sizeof(desc));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = WIN_W;
+    desc.Height = WIN_H;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    ID3D12Device_GetCopyableFootprints(g_dev, &desc, 0, 1, 0,
+				       &fp, &num_rows, &row_size, &total);
+    if (FAILED(ID3D12Resource_Map(g_up_present, 0, NULL, (void **)&mapped)))
+	return;
+
+    for (y = dst_y; y < WIN_H; y++)
+    {
+	sy = y / WIN_SCALE;
+	for (x = 0; x < WIN_W; x++)
+	{
+	    const unsigned char *s;
+	    unsigned char *d;
+
+	    sx = x / WIN_SCALE;
+	    s = color + (sy * GB_WIDTH + sx) * 4;
+	    d = mapped + fp.Offset + (UINT)y * fp.Footprint.RowPitch +
+		(UINT)x * 4;
+	    d[0] = s[2];
+	    d[1] = s[1];
+	    d[2] = s[0];
+	    d[3] = 255;
+	}
+    }
+    memset(&dst_loc, 0, sizeof(dst_loc));
+    dst_loc.pResource = dst;
+    dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    memset(&src_loc, 0, sizeof(src_loc));
+    src_loc.pResource = g_up_present;
+    src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src_loc.PlacedFootprint = fp;
+    box.left = 0;
+    box.top = (UINT)dst_y;
+    box.front = 0;
+    box.right = WIN_W;
+    box.bottom = WIN_H;
+    box.back = 1;
+    ID3D12GraphicsCommandList_CopyTextureRegion(
+	g_cmd, &dst_loc, 0, (UINT)dst_y, 0, &src_loc, &box);
+    ID3D12Resource_Unmap(g_up_present, 0, NULL);
+}
+
+static void nearest_upscale_ngx(void)
+{
+    const unsigned char *color = GB_ColorRGBA();
+    const float *depth = GB_Depth();
+    const float *vel = GB_VelocityRG();
+    int x, y;
+
+    if (!color || !depth || !vel)
+	return;
+    for (y = 0; y < WIN_H; y++)
+    {
+	int sy = y / WIN_SCALE;
+
+	for (x = 0; x < WIN_W; x++)
+	{
+	    int sx = x / WIN_SCALE;
+	    int si = sy * GB_WIDTH + sx;
+	    int di = y * WIN_W + x;
+
+	    g_color_hi[di * 4 + 0] = color[si * 4 + 0];
+	    g_color_hi[di * 4 + 1] = color[si * 4 + 1];
+	    g_color_hi[di * 4 + 2] = color[si * 4 + 2];
+	    g_color_hi[di * 4 + 3] = 255;
+	    if (depth[si] <= 0.0f)
+	    {
+		g_depth_hi[di] = 0.0f;
+		g_vel_hi[di * 2 + 0] = 0.0f;
+		g_vel_hi[di * 2 + 1] = 0.0f;
+		continue;
+	    }
+	    g_depth_hi[di] = depth[si];
+	    g_vel_hi[di * 2 + 0] = vel[si * 2 + 0];
+	    g_vel_hi[di * 2 + 1] = vel[si * 2 + 1];
+	}
+    }
+}
+
+static int init_hi_res(void)
+{
+    g_st_color_hi = D3D12_RESOURCE_STATE_COPY_DEST;
+    g_st_depth_hi = D3D12_RESOURCE_STATE_COPY_DEST;
+    g_st_velocity_hi = D3D12_RESOURCE_STATE_COPY_DEST;
+    g_tex_color_hi = make_tex(WIN_W, WIN_H, DXGI_FORMAT_R8G8B8A8_UNORM,
+			      D3D12_RESOURCE_FLAG_NONE, g_st_color_hi,
+			      L"GB_ColorHi");
+    g_tex_depth_hi = make_tex(WIN_W, WIN_H, DXGI_FORMAT_R32_FLOAT,
+			      D3D12_RESOURCE_FLAG_NONE, g_st_depth_hi,
+			      L"GB_DepthHi");
+    g_tex_velocity_hi = make_tex(WIN_W, WIN_H, DXGI_FORMAT_R32G32_FLOAT,
+				 D3D12_RESOURCE_FLAG_NONE, g_st_velocity_hi,
+				 L"GB_VelocityHi");
+    g_up_color_hi = make_upload(upload_bytes(WIN_W, WIN_H, 4));
+    g_up_depth_hi = make_upload(upload_bytes(WIN_W, WIN_H, 4));
+    g_up_velocity_hi = make_upload(upload_bytes(WIN_W, WIN_H, 8));
+    return g_tex_color_hi && g_tex_depth_hi && g_tex_velocity_hi &&
+	g_up_color_hi && g_up_depth_hi && g_up_velocity_hi;
+}
+
 static void init_d3d(HWND hwnd)
 {
     IDXGIFactory4 *factory = NULL;
@@ -596,6 +915,7 @@ void I_FinishUpdate(void)
     UINT idx;
     ID3D12CommandList *lists[1];
     int used_ngx = 0;
+    int used_a4k = 0;
     int reset;
 
     GB_ConvertColor(screens[0]);
@@ -620,52 +940,96 @@ void I_FinishUpdate(void)
     upload_tex(g_tex_velocity, g_up_velocity, GB_VelocityRG(),
 	       GB_WIDTH, GB_HEIGHT, 8, DXGI_FORMAT_R32G32_FLOAT);
 
-    if (Ngx_Ready() && GB_GetDebugView() == GB_VIEW_COLOR &&
+    if (Ngx_Ready() && Ngx_ShowEvalOutput() &&
+	GB_GetDebugView() == GB_VIEW_COLOR &&
 	GB_HasScenePixels())
     {
+	if (Ngx_WantsHiRes() && g_tex_color_hi)
+	{
+	    nearest_upscale_ngx();
+	    barrier(g_tex_color_hi, &g_st_color_hi,
+		    D3D12_RESOURCE_STATE_COPY_DEST);
+	    barrier(g_tex_depth_hi, &g_st_depth_hi,
+		    D3D12_RESOURCE_STATE_COPY_DEST);
+	    barrier(g_tex_velocity_hi, &g_st_velocity_hi,
+		    D3D12_RESOURCE_STATE_COPY_DEST);
+	    upload_tex(g_tex_color_hi, g_up_color_hi, g_color_hi,
+		       WIN_W, WIN_H, 4, DXGI_FORMAT_R8G8B8A8_UNORM);
+	    upload_tex(g_tex_depth_hi, g_up_depth_hi, g_depth_hi,
+		       WIN_W, WIN_H, 4, DXGI_FORMAT_R32_FLOAT);
+	    upload_tex(g_tex_velocity_hi, g_up_velocity_hi, g_vel_hi,
+		       WIN_W, WIN_H, 8, DXGI_FORMAT_R32G32_FLOAT);
+	    barrier(g_tex_color_hi, &g_st_color_hi,
+		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	    barrier(g_tex_depth_hi, &g_st_depth_hi,
+		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	    barrier(g_tex_velocity_hi, &g_st_velocity_hi,
+		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	    barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	    used_ngx = Ngx_Evaluate(g_cmd, g_tex_color_hi, g_tex_depth_hi,
+				    g_tex_velocity_hi, g_tex_out, reset);
+	}
+	else
+	{
+	    barrier(g_tex_color, &g_st_color,
+		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	    barrier(g_tex_depth, &g_st_depth,
+		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	    barrier(g_tex_velocity, &g_st_velocity,
+		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	    barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	    used_ngx = Ngx_Evaluate(g_cmd, g_tex_color, g_tex_depth,
+				    g_tex_velocity, g_tex_out, reset);
+	}
+    }
+
+    if (used_ngx && !Ngx_ShowEvalOutput())
+	used_ngx = 0;
+
+    if (!used_ngx && Anime4K_Ready() &&
+	GB_GetDebugView() == GB_VIEW_COLOR)
+    {
 	barrier(g_tex_color, &g_st_color,
-		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
-		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	barrier(g_tex_depth, &g_st_depth,
-		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
-		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	barrier(g_tex_velocity, &g_st_velocity,
-		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-	used_ngx = Ngx_Evaluate(g_cmd, g_tex_color, g_tex_depth,
-				g_tex_velocity, g_tex_out, reset);
+	used_a4k = Anime4K_Evaluate(g_cmd, g_tex_color, g_tex_out);
     }
 
-    if (used_ngx)
+    if (used_ngx || used_a4k)
     {
+	int hud_y = (SCREENHEIGHT - 32) * WIN_SCALE;
+
+	uav_barrier(g_tex_out);
 	barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_COPY_SOURCE);
-	copy_tex_to_buffer(g_tex_out, g_readback, WIN_W, WIN_H,
-			   DXGI_FORMAT_B8G8R8A8_UNORM);
-	ID3D12GraphicsCommandList_Close(g_cmd);
-	lists[0] = (ID3D12CommandList *)g_cmd;
-	ID3D12CommandQueue_ExecuteCommandLists(g_queue, 1, lists);
-	wait_gpu();
-	if (!readback_to_present(WIN_W, WIN_H, DXGI_FORMAT_B8G8R8A8_UNORM))
-	    used_ngx = 0;
+	barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_COPY_DEST);
+	if (hud_y > 0 && hud_y < WIN_H)
+	    copy_tex_rows(g_tex_out, g_bb[idx], 0, (UINT)hud_y);
 	else
-	    GB_OverlayHud(g_present, WIN_W, WIN_H);
-	ID3D12CommandAllocator_Reset(g_alloc);
-	ID3D12GraphicsCommandList_Reset(g_cmd, g_alloc, NULL);
+	    copy_tex_to_tex(g_tex_out, g_bb[idx]);
+	blit_statusbar(g_bb[idx]);
+    }
+    else
+    {
+	GB_ComposePresent(g_present, WIN_W, WIN_H);
+	barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_COPY_DEST);
+	upload_tex(g_bb[idx], g_up_present, g_present,
+		   WIN_W, WIN_H, 4, DXGI_FORMAT_B8G8R8A8_UNORM);
+	blit_statusbar(g_bb[idx]);
     }
 
-    if (!used_ngx)
-	GB_ComposePresent(g_present, WIN_W, WIN_H);
-
-    barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_COPY_DEST);
-    upload_tex(g_bb[idx], g_up_present, g_present,
-	       WIN_W, WIN_H, 4, DXGI_FORMAT_B8G8R8A8_UNORM);
     barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_PRESENT);
-
     ID3D12GraphicsCommandList_Close(g_cmd);
     lists[0] = (ID3D12CommandList *)g_cmd;
     ID3D12CommandQueue_ExecuteCommandLists(g_queue, 1, lists);
+    check_device("ExecuteCommandLists");
     IDXGISwapChain3_Present(g_swap, 0, 0);
+    check_device("Present");
 }
 
 void I_ReadScreen(byte *scr)
@@ -694,13 +1058,20 @@ void I_ShutdownGraphics(void)
 {
     grab_mouse(0);
     wait_gpu();
+    Anime4K_Shutdown();
     Ngx_Shutdown();
     if (g_readback) ID3D12Resource_Release(g_readback);
     if (g_up_present) ID3D12Resource_Release(g_up_present);
+    if (g_up_velocity_hi) ID3D12Resource_Release(g_up_velocity_hi);
+    if (g_up_depth_hi) ID3D12Resource_Release(g_up_depth_hi);
+    if (g_up_color_hi) ID3D12Resource_Release(g_up_color_hi);
     if (g_up_velocity) ID3D12Resource_Release(g_up_velocity);
     if (g_up_normal) ID3D12Resource_Release(g_up_normal);
     if (g_up_depth) ID3D12Resource_Release(g_up_depth);
     if (g_up_color) ID3D12Resource_Release(g_up_color);
+    if (g_tex_velocity_hi) ID3D12Resource_Release(g_tex_velocity_hi);
+    if (g_tex_depth_hi) ID3D12Resource_Release(g_tex_depth_hi);
+    if (g_tex_color_hi) ID3D12Resource_Release(g_tex_color_hi);
     if (g_tex_out) ID3D12Resource_Release(g_tex_out);
     if (g_tex_velocity) ID3D12Resource_Release(g_tex_velocity);
     if (g_tex_normal) ID3D12Resource_Release(g_tex_normal);
@@ -716,7 +1087,9 @@ void I_ShutdownGraphics(void)
     if (g_fence_ev) CloseHandle(g_fence_ev);
     if (g_dev) ID3D12Device_Release(g_dev);
     g_readback = g_up_present = g_up_velocity = g_up_normal = g_up_depth = g_up_color = NULL;
+    g_up_velocity_hi = g_up_depth_hi = g_up_color_hi = NULL;
     g_tex_out = g_tex_velocity = g_tex_normal = g_tex_depth = g_tex_color = NULL;
+    g_tex_velocity_hi = g_tex_depth_hi = g_tex_color_hi = NULL;
     g_bb[0] = g_bb[1] = NULL;
     g_swap = NULL;
     g_cmd = NULL;
@@ -765,9 +1138,21 @@ void I_InitGraphics(void)
     init_d3d(g_hwnd);
     if (Ngx_Wanted())
 	Ngx_Init(g_dev, g_queue);
+    if (Ngx_WantsHiRes() && !init_hi_res())
+	I_Error("NGX hi-res G-buffers failed");
+    if (!Ngx_Ready())
+	Anime4K_Init(g_dev);
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
     grab_mouse(1);
     fprintf(stderr, "I_InitGraphics: D3D12CreateDevice %dx%d (internal %dx%d)\n",
 	    WIN_W, WIN_H, SCREENWIDTH, SCREENHEIGHT);
+    if (Anime4K_Ready())
+	fprintf(stderr, "present mode: anime4k-fast\n");
+    else if (Ngx_WantsHiRes())
+	fprintf(stderr, "present mode: dlss5-dlaa\n");
+    else if (Ngx_Ready())
+	fprintf(stderr, "present mode: dlss-upscale\n");
+    else
+	fprintf(stderr, "present mode: nearest\n");
 }
