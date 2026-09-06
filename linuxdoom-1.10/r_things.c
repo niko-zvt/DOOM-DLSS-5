@@ -479,11 +479,14 @@ R_DrawVisSprite
 		proj = (float)centerx;
 	    if (z < 1.0f)
 		z = 1.0f;
+	    /* Screen-space prev - cur of the sprite this tic. d_right is the
+	       component along the LEFT vector (screen x decreases), so the
+	       sign already matches; up (mz > 0) means prev screen y is larger. */
 	    d_right = -mx * vs + my * vc;
 	    d_fwd = mx * vc + my * vs;
 	    (void)d_fwd;
 	    du = d_right * (proj / z);
-	    dv = -mz * (proj / z);
+	    dv = mz * (proj / z);
 	}
 	GB_SetObjectMotion(du, dv);
     }

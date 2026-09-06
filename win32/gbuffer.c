@@ -325,11 +325,17 @@ void GB_EndFrame(void)
 		    continue;
 		}
 
+		/* gb_depth is the view-axis depth (projection / scale), so the
+		   distance along the ray is z / cos(column angle). */
 		ray = viewangle + xtoviewangle[vx];
 		rc = (float)cos(gb_bam_to_rad(ray));
 		rs = (float)sin(gb_bam_to_rad(ray));
-		wx = cur_x + rc * z;
-		wy = cur_y + rs * z;
+		{
+		    float ct = (float)cos(gb_bam_to_rad(xtoviewangle[vx]));
+		    float d = (ct > 0.01f) ? z / ct : z;
+		    wx = cur_x + rc * d;
+		    wy = cur_y + rs * d;
+		}
 		wz = cur_z + ((float)(centery - vy) * z) / proj;
 
 		relx = wx - prev_x;
@@ -344,11 +350,14 @@ void GB_EndFrame(void)
 		    continue;
 		}
 
-		prev_sx = (float)centerx + vxcam * (proj / vz);
+		/* vxcam is positive to the LEFT (DOOM angles grow CCW,
+		   xtoviewangle[0] is the left edge), so it moves screen x down. */
+		prev_sx = (float)centerx - vxcam * (proj / vz);
 		prev_sy = (float)centery - relz * (proj / vz);
-		/* View-space pixel delta; same units as 320x200 screen. */
-		gb_velocity[i * 2 + 0] = (float)vx - prev_sx + gb_obj_du[i];
-		gb_velocity[i * 2 + 1] = (float)vy - prev_sy + gb_obj_dv[i];
+		/* NGX / FSR2 convention: vector from the current pixel to where
+		   it was in the previous frame (prev - cur), low-res pixels. */
+		gb_velocity[i * 2 + 0] = prev_sx - (float)vx + gb_obj_du[i];
+		gb_velocity[i * 2 + 1] = prev_sy - (float)vy + gb_obj_dv[i];
 	    }
 	}
     }
