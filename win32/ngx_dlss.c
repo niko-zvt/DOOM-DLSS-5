@@ -12,6 +12,7 @@
 #include <wchar.h>
 #include <string.h>
 #include <d3d12.h>
+
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_defs.h>
 #include <nvsdk_ngx_helpers.h>
@@ -25,9 +26,21 @@ int Ngx_Wanted(void)
 #ifdef WINDOOM_HAS_NGX
 
 static int g_inited;
+static int g_hires;
 static NVSDK_NGX_Handle *g_handle;
 static NVSDK_NGX_Parameter *g_params;
 static ID3D12Device *g_dev;
+
+static int ngx_renodx_present(const wchar_t *dir)
+{
+    wchar_t addon[MAX_PATH];
+
+    if (!dir)
+	return 0;
+    if (_snwprintf(addon, MAX_PATH, L"%s\\renodx-dlss5.addon64", dir) < 0)
+	return 0;
+    return GetFileAttributesW(addon) != INVALID_FILE_ATTRIBUTES;
+}
 
 static void ngx_teardown(void)
 {
@@ -41,6 +54,7 @@ static void ngx_teardown(void)
 	NVSDK_NGX_D3D12_Shutdown1(g_dev);
     g_dev = NULL;
     g_inited = 0;
+    g_hires = 0;
 }
 
 static int ngx_check_dlss(void)
@@ -117,79 +131,49 @@ static void ngx_log_optimal(void)
 	    opt_w, opt_h, min_w, min_h, max_w, max_h);
 }
 
-static int ngx_create_feature(ID3D12CommandQueue *queue)
+static int ngx_create_feature(ID3D12GraphicsCommandList *cl)
 {
     NVSDK_NGX_DLSS_Create_Params create;
-    ID3D12CommandAllocator *alloc = NULL;
-    ID3D12GraphicsCommandList *cl = NULL;
-    ID3D12Fence *fence = NULL;
-    HANDLE ev = NULL;
-    ID3D12CommandList *lists[1];
     NVSDK_NGX_Result r;
-    HRESULT hr;
-    int ok = 0;
 
-    if (!queue || !g_params || !g_dev)
+    if (g_handle)
+	return 1;
+    if (!cl || !g_params)
 	return 0;
 
     memset(&create, 0, sizeof(create));
-    create.Feature.InWidth = 320;
-    create.Feature.InHeight = 200;
-    create.Feature.InTargetWidth = 1280;
-    create.Feature.InTargetHeight = 800;
-    create.Feature.InPerfQualityValue =
-	NVSDK_NGX_PerfQuality_Value_UltraPerformance;
-    create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
-				  NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
-
-    hr = ID3D12Device_CreateCommandAllocator(g_dev,
-		D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator,
-		(void **)&alloc);
-    if (FAILED(hr))
-	goto done;
-    hr = ID3D12Device_CreateCommandList(g_dev, 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-		alloc, NULL, &IID_ID3D12GraphicsCommandList, (void **)&cl);
-    if (FAILED(hr))
-	goto done;
-    hr = ID3D12Device_CreateFence(g_dev, 0, D3D12_FENCE_FLAG_NONE,
-		&IID_ID3D12Fence, (void **)&fence);
-    if (FAILED(hr))
-	goto done;
-    ev = CreateEventA(NULL, FALSE, FALSE, NULL);
-    if (!ev)
-	goto done;
+    if (g_hires)
+    {
+	create.Feature.InWidth = 1280;
+	create.Feature.InHeight = 800;
+	create.Feature.InTargetWidth = 1280;
+	create.Feature.InTargetHeight = 800;
+	create.Feature.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_DLAA;
+	create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+    }
+    else
+    {
+	create.Feature.InWidth = 320;
+	create.Feature.InHeight = 200;
+	create.Feature.InTargetWidth = 1280;
+	create.Feature.InTargetHeight = 800;
+	create.Feature.InPerfQualityValue =
+	    NVSDK_NGX_PerfQuality_Value_UltraPerformance;
+	create.InFeatureCreateFlags =
+	    NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
+	    NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+    }
 
     r = NGX_D3D12_CREATE_DLSS_EXT(cl, 1, 1, &g_handle, g_params, &create);
-    ID3D12GraphicsCommandList_Close(cl);
     if (NVSDK_NGX_FAILED(r) || !g_handle)
     {
 	fprintf(stderr, "NGX: CREATE_DLSS_EXT failed (0x%08x %ls)\n",
 		(unsigned)r, GetNGXResultAsString(r));
 	g_handle = NULL;
-	goto done;
+	return 0;
     }
-
-    lists[0] = (ID3D12CommandList *)cl;
-    ID3D12CommandQueue_ExecuteCommandLists(queue, 1, lists);
-    if (FAILED(ID3D12CommandQueue_Signal(queue, fence, 1)))
-	goto done;
-    if (ID3D12Fence_GetCompletedValue(fence) < 1)
-    {
-	ID3D12Fence_SetEventOnCompletion(fence, 1, ev);
-	WaitForSingleObject(ev, INFINITE);
-    }
-    ok = 1;
-
-done:
-    if (ev)
-	CloseHandle(ev);
-    if (fence)
-	ID3D12Fence_Release(fence);
-    if (cl)
-	ID3D12GraphicsCommandList_Release(cl);
-    if (alloc)
-	ID3D12CommandAllocator_Release(alloc);
-    return ok;
+    fprintf(stderr, "NGX: DLSS feature created on first evaluate\n");
+    return 1;
 }
 
 int Ngx_Init(void *device, void *queue)
@@ -198,6 +182,7 @@ int Ngx_Init(void *device, void *queue)
     wchar_t path[MAX_PATH];
 
     g_inited = 0;
+    g_hires = 0;
     g_handle = NULL;
     g_params = NULL;
     g_dev = (ID3D12Device *)device;
@@ -237,13 +222,16 @@ int Ngx_Init(void *device, void *queue)
     }
     ngx_log_optimal();
 
-    if (!ngx_create_feature((ID3D12CommandQueue *)queue))
-    {
-	ngx_teardown();
-	return 0;
-    }
+    g_hires = ngx_renodx_present(path);
+    if (g_hires)
+	fprintf(stderr,
+		"NGX: RenoDX addon present; hi-res DLAA + evaluate "
+		"(HUD is blitted after NR)\n");
 
-    fprintf(stderr, "NGX: DLSS feature ready\n");
+    (void)queue;
+    fprintf(stderr,
+	    "NGX: runtime ready (%s, feature created on first evaluate)\n",
+	    g_hires ? "dlss5-dlaa" : "dlss-upscale");
     g_inited = 1;
     return 1;
 }
@@ -255,7 +243,17 @@ void Ngx_Shutdown(void)
 
 int Ngx_Ready(void)
 {
-    return g_handle != NULL;
+    return g_inited;
+}
+
+int Ngx_WantsHiRes(void)
+{
+    return g_inited && g_hires;
+}
+
+int Ngx_ShowEvalOutput(void)
+{
+    return g_inited;
 }
 
 int Ngx_Evaluate(void *cmdlist, void *color, void *depth, void *velocity,
@@ -264,9 +262,28 @@ int Ngx_Evaluate(void *cmdlist, void *color, void *depth, void *velocity,
     ID3D12GraphicsCommandList *cl = (ID3D12GraphicsCommandList *)cmdlist;
     NVSDK_NGX_D3D12_DLSS_Eval_Params ev;
     NVSDK_NGX_Result r;
+    unsigned sub_w;
+    unsigned sub_h;
 
-    if (!g_handle || !cl || !color || !depth || !velocity || !output)
+    if (!g_inited || !cl || !color || !depth || !velocity || !output)
 	return 0;
+    if (!ngx_create_feature(cl))
+    {
+	g_inited = 0;
+	return 0;
+    }
+
+    /* DLAA create is 1280x800. A smaller InRenderSubrect is InvalidParameter. */
+    if (g_hires)
+    {
+	sub_w = 1280;
+	sub_h = 800;
+    }
+    else
+    {
+	sub_w = 320;
+	sub_h = 200;
+    }
 
     memset(&ev, 0, sizeof(ev));
     ev.Feature.pInColor = (ID3D12Resource *)color;
@@ -276,14 +293,28 @@ int Ngx_Evaluate(void *cmdlist, void *color, void *depth, void *velocity,
     ev.InJitterOffsetX = 0.0f;
     ev.InJitterOffsetY = 0.0f;
     ev.InReset = reset ? 1 : 0;
-    ev.InMVScaleX = 1.0f;
-    ev.InMVScaleY = 1.0f;
-    ev.InRenderSubrectDimensions.Width = 320;
-    ev.InRenderSubrectDimensions.Height = 200;
+    ev.InRenderSubrectDimensions.Width = sub_w;
+    ev.InRenderSubrectDimensions.Height = sub_h;
+    if (g_hires)
+    {
+	static int hires_warm;
+
+	if (hires_warm < 8)
+	{
+	    ev.InReset = 1;
+	    hires_warm++;
+	}
+	ev.InMVScaleX = 4.0f;
+	ev.InMVScaleY = 4.0f;
+    }
+    else
+    {
+	ev.InMVScaleX = 1.0f;
+	ev.InMVScaleY = 1.0f;
+    }
     ev.InFrameTimeDeltaInMsec = 1000.0f / 35.0f;
 
     r = NGX_D3D12_EVALUATE_DLSS_EXT(cl, g_handle, g_params, &ev);
-    ID3D12GraphicsCommandList_ClearState(cl, NULL);
     if (NVSDK_NGX_FAILED(r))
     {
 	fprintf(stderr, "NGX: EVALUATE_DLSS_EXT failed (0x%08x %ls)\n",
@@ -308,6 +339,16 @@ void Ngx_Shutdown(void)
 }
 
 int Ngx_Ready(void)
+{
+    return 0;
+}
+
+int Ngx_WantsHiRes(void)
+{
+    return 0;
+}
+
+int Ngx_ShowEvalOutput(void)
 {
     return 0;
 }

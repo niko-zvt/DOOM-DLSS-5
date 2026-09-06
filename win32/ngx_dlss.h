@@ -10,6 +10,8 @@ int  Ngx_Wanted(void);
 int  Ngx_Init(void *device, void *queue);
 void Ngx_Shutdown(void);
 int  Ngx_Ready(void);
+int  Ngx_WantsHiRes(void);
+int  Ngx_ShowEvalOutput(void);
 int  Ngx_Evaluate(void *cmdlist,
 		  void *color, void *depth, void *velocity, void *output,
 		  int reset);
