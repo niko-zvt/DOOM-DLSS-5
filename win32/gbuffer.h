@@ -44,6 +44,9 @@ void GB_ConvertColor(const unsigned char *src8);
 void GB_SetDebugView(int view);
 int  GB_GetDebugView(void);
 
+void GB_ToggleHud(void);
+int  GB_HudVisible(void);
+
 const unsigned char *GB_ColorRGBA(void);
 const float         *GB_Depth(void);
 const unsigned char *GB_NormalRGBA(void);

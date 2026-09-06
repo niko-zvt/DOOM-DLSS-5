@@ -18,7 +18,12 @@ Handled in the Win32 window. They never reach the DOOM menu.
 ## CPU buffers (320x200)
 
 Origin is top-left. +X right, +Y down (DOOM screen). Written in
-`win32/gbuffer.c`.
+`win32/gbuffer.c`. Depth, normals, and velocity use the same
+`columnofs` / `ylookup` address as `screens[0]` (the bezel hole),
+not view-space (0,0).
+Bezel pixels clamp-to-edge from that rect. Insert hides the status
+bar; then the pad also covers y=168..199 (including color) so the
+upscaler does not see the HUD.
 
 Color
     RGBA8. PLAYPAL after gamma. A = 255.
@@ -32,7 +37,8 @@ Depth
     Sky:      8192 (far)
     2D / HUD: 0
 
-    NGX: not DepthInverted. Sky and HUD stay non-3D (0 / 8192).
+    NGX / FSR2: not DepthInverted. Sky and HUD stay non-3D (0 / 8192).
+    FSR2 uses the same color, depth, and motion textures as classic DLSS.
 
 Normal
     RGBA8, world space, Y up. Stored as n * 0.5 + 0.5.

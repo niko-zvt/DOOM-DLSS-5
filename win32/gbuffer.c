@@ -8,6 +8,7 @@
 #include "doomdef.h"
 #include "r_local.h"
 #include "tables.h"
+#include "v_video.h"
 
 #define GB_PIX   (GB_WIDTH * GB_HEIGHT)
 #define GB_FAR_Z 8192.0f
@@ -25,6 +26,7 @@ static float gb_col_nx, gb_col_ny, gb_col_nz;
 static float gb_col_du, gb_col_dv;
 static int   gb_col_x = -1;
 static int   gb_debug_view = GB_VIEW_COLOR;
+static int   gb_hud_visible = 1;
 static int   gb_reset;
 
 static int     gb_have_prev;
@@ -53,6 +55,7 @@ void GB_Init(void)
     gb_have_prev = 0;
     gb_reset = 1;
     gb_debug_view = GB_VIEW_COLOR;
+    gb_hud_visible = 1;
     gb_col_du = 0.0f;
     gb_col_dv = 0.0f;
 }
@@ -100,6 +103,21 @@ int GB_ConsumeReset(void)
     return r;
 }
 
+/* Screen pixel of view-space (vx, vy). Same address as screens[0]. */
+static int gb_screen_x(int vx)
+{
+    if (vx >= 0 && columnofs[vx] >= 0 && columnofs[vx] < GB_WIDTH)
+	return columnofs[vx];
+    return vx + viewwindowx;
+}
+
+static int gb_screen_y(int vy)
+{
+    if (vy >= 0 && ylookup[vy] && screens[0])
+	return (int)(ylookup[vy] - screens[0]) / SCREENWIDTH;
+    return vy + viewwindowy;
+}
+
 static void gb_write_pixel(int x, int y, float z, float nx, float ny, float nz)
 {
     int i;
@@ -128,34 +146,38 @@ static void gb_write_pixel(int x, int y, float z, float nx, float ny, float nz)
 void GB_WriteColumn(int x, int yl, int yh)
 {
     int y;
-    int y_limit = GB_HEIGHT - 1;
+    int sx;
 
     if (x != gb_col_x)
 	return;
-    if (viewheight > 0 && viewheight < GB_HEIGHT)
-	y_limit = viewheight - 1;
     if (yl < 0)
 	yl = 0;
-    if (yh > y_limit)
-	yh = y_limit;
+    if (viewheight > 0 && yh >= viewheight)
+	yh = viewheight - 1;
+    sx = gb_screen_x(x);
     for (y = yl; y <= yh; y++)
-	gb_write_pixel(x, y, gb_col_z, gb_col_nx, gb_col_ny, gb_col_nz);
+	gb_write_pixel(sx, gb_screen_y(y), gb_col_z,
+		       gb_col_nx, gb_col_ny, gb_col_nz);
 }
 
 void GB_WriteSpan(int y, int x1, int x2, float z, float nx, float ny, float nz)
 {
     int x;
+    int sy;
 
-    if (viewheight > 0 && viewheight < GB_HEIGHT && y >= viewheight)
+    if (y < 0)
+	return;
+    if (viewheight > 0 && y >= viewheight)
 	return;
     if (x1 < 0)
 	x1 = 0;
-    if (x2 >= GB_WIDTH)
-	x2 = GB_WIDTH - 1;
+    if (viewwidth > 0 && x2 >= viewwidth)
+	x2 = viewwidth - 1;
     gb_col_du = 0.0f;
     gb_col_dv = 0.0f;
+    sy = gb_screen_y(y);
     for (x = x1; x <= x2; x++)
-	gb_write_pixel(x, y, z, nx, ny, nz);
+	gb_write_pixel(gb_screen_x(x), sy, z, nx, ny, nz);
 }
 
 static float gb_bam_to_rad(angle_t a)
@@ -163,14 +185,95 @@ static float gb_bam_to_rad(angle_t a)
     return (float)((double)a * (6.283185307179586 / 4294967296.0));
 }
 
+static void gb_copy_pixel(int dx, int dy, int sx, int sy, int copy_color)
+{
+    int di;
+    int si;
+
+    if ((unsigned)dx >= (unsigned)GB_WIDTH ||
+	(unsigned)dy >= (unsigned)GB_HEIGHT ||
+	(unsigned)sx >= (unsigned)GB_WIDTH ||
+	(unsigned)sy >= (unsigned)GB_HEIGHT)
+	return;
+    di = dy * GB_WIDTH + dx;
+    si = sy * GB_WIDTH + sx;
+    gb_depth[di] = gb_depth[si];
+    gb_obj_du[di] = gb_obj_du[si];
+    gb_obj_dv[di] = gb_obj_dv[si];
+    gb_velocity[di * 2 + 0] = gb_velocity[si * 2 + 0];
+    gb_velocity[di * 2 + 1] = gb_velocity[si * 2 + 1];
+    memcpy(gb_normal + di * 4, gb_normal + si * 4, 4);
+    if (copy_color)
+	memcpy(gb_color + di * 4, gb_color + si * 4, 4);
+}
+
+static void gb_view_rect(int *x0, int *y0, int *x1, int *y1)
+{
+    int vw = viewwidth;
+    int vh = viewheight;
+
+    if (vw < 1)
+	vw = GB_WIDTH;
+    if (vh < 1)
+	vh = GB_HEIGHT;
+    *x0 = gb_screen_x(0);
+    *y0 = gb_screen_y(0);
+    *x1 = *x0 + vw - 1;
+    *y1 = *y0 + vh - 1;
+    if (*x0 < 0)
+	*x0 = 0;
+    if (*y0 < 0)
+	*y0 = 0;
+    if (*x1 >= GB_WIDTH)
+	*x1 = GB_WIDTH - 1;
+    if (*y1 >= GB_HEIGHT)
+	*y1 = GB_HEIGHT - 1;
+}
+
+static void gb_pad_view_edges(void)
+{
+    int x, y;
+    int x0, y0, x1, y1;
+    int ymax;
+    int copy_color;
+
+    gb_view_rect(&x0, &y0, &x1, &y1);
+    copy_color = !gb_hud_visible;
+    ymax = gb_hud_visible ? (SCREENHEIGHT - 32) : GB_HEIGHT;
+    if (ymax > GB_HEIGHT)
+	ymax = GB_HEIGHT;
+    for (y = 0; y < ymax; y++)
+    {
+	for (x = 0; x < GB_WIDTH; x++)
+	{
+	    int cx = x;
+	    int cy = y;
+
+	    if (x >= x0 && x <= x1 && y >= y0 && y <= y1)
+		continue;
+	    if (cx < x0)
+		cx = x0;
+	    if (cx > x1)
+		cx = x1;
+	    if (cy < y0)
+		cy = y0;
+	    if (cy > y1)
+		cy = y1;
+	    gb_copy_pixel(x, y, cx, cy, copy_color);
+	}
+    }
+}
+
 void GB_EndFrame(void)
 {
     int x, y;
+    int x0, y0, x1, y1;
     float cur_x, cur_y, cur_z;
     float prev_x, prev_y, prev_z;
     float cur_c, cur_s, prev_c, prev_s;
     float proj;
 
+    gb_view_rect(&x0, &y0, &x1, &y1);
     cur_x = (float)viewx / 65536.0f;
     cur_y = (float)viewy / 65536.0f;
     cur_z = (float)viewz / 65536.0f;
@@ -193,33 +296,47 @@ void GB_EndFrame(void)
 	    for (x = 0; x < GB_WIDTH; x++)
 	    {
 		int i = y * GB_WIDTH + x;
+		int vx = x - x0;
+		int vy = y - y0;
 		float z = gb_depth[i];
 		angle_t ray;
 		float rc, rs;
 		float wx, wy, wz;
 		float relx, rely, relz;
-		float vz, vx;
+		float vz, vxcam;
 		float prev_sx, prev_sy;
 
+		if (x < x0 || x > x1 || y < y0 || y > y1)
+		{
+		    gb_velocity[i * 2 + 0] = 0.0f;
+		    gb_velocity[i * 2 + 1] = 0.0f;
+		    continue;
+		}
 		if (z <= 0.0f || z >= GB_FAR_Z)
 		{
 		    gb_velocity[i * 2 + 0] = 0.0f;
 		    gb_velocity[i * 2 + 1] = 0.0f;
 		    continue;
 		}
+		if ((unsigned)vx >= (unsigned)SCREENWIDTH)
+		{
+		    gb_velocity[i * 2 + 0] = 0.0f;
+		    gb_velocity[i * 2 + 1] = 0.0f;
+		    continue;
+		}
 
-		ray = viewangle + xtoviewangle[x];
+		ray = viewangle + xtoviewangle[vx];
 		rc = (float)cos(gb_bam_to_rad(ray));
 		rs = (float)sin(gb_bam_to_rad(ray));
 		wx = cur_x + rc * z;
 		wy = cur_y + rs * z;
-		wz = cur_z + ((float)(centery - y) * z) / proj;
+		wz = cur_z + ((float)(centery - vy) * z) / proj;
 
 		relx = wx - prev_x;
 		rely = wy - prev_y;
 		relz = wz - prev_z;
 		vz = relx * prev_c + rely * prev_s;
-		vx = -relx * prev_s + rely * prev_c;
+		vxcam = -relx * prev_s + rely * prev_c;
 		if (vz < 1.0f)
 		{
 		    gb_velocity[i * 2 + 0] = 0.0f;
@@ -227,11 +344,11 @@ void GB_EndFrame(void)
 		    continue;
 		}
 
-		prev_sx = (float)centerx + vx * (proj / vz);
+		prev_sx = (float)centerx + vxcam * (proj / vz);
 		prev_sy = (float)centery - relz * (proj / vz);
-		/* Pixel delta at 320x200. +X right, +Y down (DOOM / NGX MVLowRes). */
-		gb_velocity[i * 2 + 0] = (float)x - prev_sx + gb_obj_du[i];
-		gb_velocity[i * 2 + 1] = (float)y - prev_sy + gb_obj_dv[i];
+		/* View-space pixel delta; same units as 320x200 screen. */
+		gb_velocity[i * 2 + 0] = (float)vx - prev_sx + gb_obj_du[i];
+		gb_velocity[i * 2 + 1] = (float)vy - prev_sy + gb_obj_dv[i];
 	    }
 	}
     }
@@ -243,6 +360,7 @@ void GB_EndFrame(void)
     gb_prev_viewz = viewz;
     gb_prev_viewangle = viewangle;
     gb_have_prev = 1;
+    gb_pad_view_edges();
 }
 
 void GB_SetPaletteRGB(const unsigned char *rgb768)
@@ -276,6 +394,17 @@ void GB_SetDebugView(int view)
 int GB_GetDebugView(void)
 {
     return gb_debug_view;
+}
+
+void GB_ToggleHud(void)
+{
+    gb_hud_visible = !gb_hud_visible;
+    GB_RequestReset();
+}
+
+int GB_HudVisible(void)
+{
+    return gb_hud_visible;
 }
 
 const unsigned char *GB_ColorRGBA(void)

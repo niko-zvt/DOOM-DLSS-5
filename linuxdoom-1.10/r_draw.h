@@ -78,6 +78,10 @@ extern byte*		ds_source;
 extern byte*		translationtables;
 extern byte*		dc_translation;
 
+/* Same tables R_DrawColumn uses: screen x/y of the 3D view. */
+extern byte*		ylookup[];
+extern int		columnofs[];
+
 
 // Span blitting for rows, floor/ceiling.
 // No Sepctre effect needed.
