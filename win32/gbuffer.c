@@ -200,8 +200,9 @@ static void gb_copy_pixel(int dx, int dy, int sx, int sy, int copy_color)
     gb_depth[di] = gb_depth[si];
     gb_obj_du[di] = gb_obj_du[si];
     gb_obj_dv[di] = gb_obj_dv[si];
-    gb_velocity[di * 2 + 0] = gb_velocity[si * 2 + 0];
-    gb_velocity[di * 2 + 1] = gb_velocity[si * 2 + 1];
+    /* Bezel / HUD are static 2D overlays: never inherit scene motion. */
+    gb_velocity[di * 2 + 0] = 0.0f;
+    gb_velocity[di * 2 + 1] = 0.0f;
     memcpy(gb_normal + di * 4, gb_normal + si * 4, 4);
     if (copy_color)
 	memcpy(gb_color + di * 4, gb_color + si * 4, 4);
