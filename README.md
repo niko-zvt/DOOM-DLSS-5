@@ -61,7 +61,8 @@ Put an IWAD in `wads/` (`freedoom2.wad`, `doom2.wad`, etc.), then:
 
 Each flag starts `windoom.exe` from its folder so local DLLs and
 shaders load. Extra game args (`-playdemo`, `-nodlss`, `-nofsr2`,
-`-depth`, `-normal`, `-velocity`, `-color`) are forwarded.
+`-depth`, `-normal`, `-velocity`, `-color`, `-export <dir>`) are
+forwarded.
 
     .\play-windoom.cmd --ngx-dlss4 -nodlss
 
@@ -77,6 +78,26 @@ F1–F4 still switch the same views at runtime.
 runs that queue for a desktop recording: all present modes in
 `-color`, then `--original` in `-depth` / `-normal` / `-velocity`.
 Needs `.\build.cmd --all` and `compare.lmp` in `build-win\Release`.
+
+    .\screencast-windoom.cmd --export D:\frames
+
+does the same but also dumps every presented frame as PNG, one
+folder per run: `D:\frames\windoom-ngx-dlss4\f000001.png`,
+`f000002.png`, ... (folders `windoom-original`,
+`windoom-ngx-dlss3.5`, `-dlss4`, `-dlss4.5`, `-dlss5`,
+`windoom-anime4k`, `windoom-fsr2`, `windoom-original-depth`,
+`-normal`, `-velocity`). Under the hood it passes the game arg
+`-export <dir>`, which also works alone:
+
+    .\play-windoom.cmd --ngx-dlss5 -playdemo compare -export D:\frames\dlss5
+
+`-export` forces one game tic per rendered frame, so the sequence is
+an exact 35 fps timeline no matter how long the PNG encode takes
+(the demo just plays back slower). What is written is the presented
+back buffer: bezel, HUD state (Insert) and F2–F4 debug views included.
+Assemble a run with ffmpeg:
+
+    ffmpeg -framerate 35 -i D:\frames\windoom-ngx-dlss5\f%06d.png -c:v libx264 -pix_fmt yuv420p dlss5.mp4
 
 ## DLSS5-Swapper
 
