@@ -83,6 +83,7 @@ add_executable(windoom
   win32/ngx_dlss.c
   win32/anime4k.c
   win32/fsr2.c
+  win32/png_export.c
 )
 
 target_include_directories(windoom PRIVATE
@@ -118,6 +119,7 @@ target_link_libraries(windoom PRIVATE
   dxguid
   ole32
   uuid
+  windowscodecs
 )
 
 option(WINDOOM_NGX "Link NVIDIA NGX (needs a local SDK; off by default)" OFF)

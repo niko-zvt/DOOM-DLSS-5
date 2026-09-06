@@ -25,8 +25,10 @@
 #include "ngx_dlss.h"
 #include "anime4k.h"
 #include "fsr2.h"
+#include "png_export.h"
 
 extern int viewheight;
+extern boolean singletics;
 
 #define WIN_SCALE 4
 #define WIN_W (SCREENWIDTH * WIN_SCALE)
@@ -81,6 +83,11 @@ static unsigned char g_palette[768];
 static unsigned char g_color_hi[WIN_W * WIN_H * 4];
 static float g_depth_hi[WIN_W * WIN_H];
 static float g_vel_hi[WIN_W * WIN_H * 2];
+
+/* -export <dir>: every presented frame -> <dir>\fNNNNNN.png */
+static const char *g_export_dir;
+static int g_export_frame;
+static unsigned char g_export_bgr[WIN_W * WIN_H * 3];
 
 static int xlatekey(WPARAM vk)
 {
@@ -488,6 +495,61 @@ static int readback_to_present(UINT w, UINT h, DXGI_FORMAT fmt)
 	       mapped + fp.Offset + y * fp.Footprint.RowPitch, dst_pitch);
     ID3D12Resource_Unmap(g_readback, 0, NULL);
     return 1;
+}
+
+/* Reads the B8G8R8A8 back buffer copy out of g_readback (GPU already
+   idle), drops alpha and writes <dir>\fNNNNNN.png. Disables export on
+   the first failure so a bad path does not spam every frame. */
+static void export_frame_png(void)
+{
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
+    D3D12_RESOURCE_DESC desc;
+    UINT num_rows;
+    UINT64 row_size;
+    UINT64 total;
+    unsigned char *mapped = NULL;
+    char path[MAX_PATH];
+    UINT x, y;
+
+    memset(&desc, 0, sizeof(desc));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = WIN_W;
+    desc.Height = WIN_H;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    ID3D12Device_GetCopyableFootprints(g_dev, &desc, 0, 1, 0,
+				       &fp, &num_rows, &row_size, &total);
+    if (FAILED(ID3D12Resource_Map(g_readback, 0, NULL, (void **)&mapped)))
+    {
+	fprintf(stderr, "export: readback map failed, export disabled\n");
+	g_export_dir = NULL;
+	return;
+    }
+    for (y = 0; y < (UINT)WIN_H; y++)
+    {
+	const unsigned char *src = mapped + fp.Offset + y * fp.Footprint.RowPitch;
+	unsigned char *dst = g_export_bgr + y * WIN_W * 3;
+
+	for (x = 0; x < (UINT)WIN_W; x++)
+	{
+	    dst[x * 3 + 0] = src[x * 4 + 0];
+	    dst[x * 3 + 1] = src[x * 4 + 1];
+	    dst[x * 3 + 2] = src[x * 4 + 2];
+	}
+    }
+    ID3D12Resource_Unmap(g_readback, 0, NULL);
+
+    snprintf(path, sizeof(path), "%s\\f%06d.png", g_export_dir,
+	     g_export_frame + 1);
+    if (!Png_Write(path, WIN_W, WIN_H, g_export_bgr))
+    {
+	fprintf(stderr, "export: cannot write %s, export disabled\n", path);
+	g_export_dir = NULL;
+	return;
+    }
+    g_export_frame++;
 }
 
 static ID3D12Resource *make_upload(UINT64 size)
@@ -1094,11 +1156,22 @@ void I_FinishUpdate(void)
 	    blit_statusbar(g_bb[idx]);
     }
 
+    if (g_export_dir)
+    {
+	barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_COPY_SOURCE);
+	copy_tex_to_buffer(g_bb[idx], g_readback, WIN_W, WIN_H,
+			   DXGI_FORMAT_B8G8R8A8_UNORM);
+    }
     barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_PRESENT);
     ID3D12GraphicsCommandList_Close(g_cmd);
     lists[0] = (ID3D12CommandList *)g_cmd;
     ID3D12CommandQueue_ExecuteCommandLists(g_queue, 1, lists);
     check_device("ExecuteCommandLists");
+    if (g_export_dir)
+    {
+	wait_gpu();
+	export_frame_png();
+    }
     IDXGISwapChain3_Present(g_swap, 0, 0);
     check_device("Present");
 }
@@ -1129,6 +1202,9 @@ void I_ShutdownGraphics(void)
 {
     grab_mouse(0);
     wait_gpu();
+    if (g_export_frame > 0)
+	fprintf(stderr, "export: %d frames written\n", g_export_frame);
+    Png_Shutdown();
     Anime4K_Shutdown();
     Fsr2_Shutdown();
     Ngx_Shutdown();
@@ -1193,6 +1269,23 @@ void I_InitGraphics(void)
 	GB_SetDebugView(GB_VIEW_VELOCITY);
     else if (M_CheckParm("-color"))
 	GB_SetDebugView(GB_VIEW_COLOR);
+
+    {
+	int p = M_CheckParm("-export");
+
+	if (p && p < myargc - 1)
+	{
+	    g_export_dir = myargv[p + 1];
+	    g_export_frame = 0;
+	    if (!CreateDirectoryA(g_export_dir, NULL) &&
+		GetLastError() != ERROR_ALREADY_EXISTS)
+		I_Error("-export: cannot create %s", g_export_dir);
+	    /* One tic per presented frame: the PNG sequence is a strict
+	       35 fps timeline no matter how long encoding takes. */
+	    singletics = true;
+	    fprintf(stderr, "export: PNG frames -> %s\n", g_export_dir);
+	}
+    }
 
     memset(&wc, 0, sizeof(wc));
     wc.lpfnWndProc = WndProc;
