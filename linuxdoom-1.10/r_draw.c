@@ -29,6 +29,7 @@ rcsid[] = "$Id: r_draw.c,v 1.4 1997/02/03 16:47:55 b1 Exp $";
 
 
 #include <stdint.h>
+#include <stdio.h>
 
 #include "doomdef.h"
 
@@ -73,7 +74,26 @@ int		viewheight;
 int		viewwindowx;
 int		viewwindowy; 
 byte*		ylookup[MAXHEIGHT]; 
-int		columnofs[MAXWIDTH]; 
+int		columnofs[MAXWIDTH];
+
+/* ylookup[] is only filled for [0, viewheight). Vanilla RANGECHECK
+ * used SCREENHEIGHT, so a column with dc_yl >= viewheight hits NULL. */
+static int R_ClipColumnToView(int low)
+{
+    if ((unsigned)dc_x >= (unsigned)SCREENWIDTH)
+	return 0;
+    if (low && ((unsigned)dc_x << 1) + 1u >= (unsigned)SCREENWIDTH)
+	return 0;
+    if (dc_yl < 0)
+	dc_yl = 0;
+    if (dc_yh >= viewheight)
+	dc_yh = viewheight - 1;
+    if (dc_yl > dc_yh)
+	return 0;
+    if (!ylookup[dc_yl])
+	return 0;
+    return 1;
+} 
 
 // Color tables for different players,
 //  translate a limited part to another
@@ -121,12 +141,11 @@ void R_DrawColumn (void)
     if (count < 0) 
 	return; 
 				 
-#ifdef RANGECHECK 
-    if ((unsigned)dc_x >= SCREENWIDTH
-	|| dc_yl < 0
-	|| dc_yh >= SCREENHEIGHT) 
-	I_Error ("R_DrawColumn: %i to %i at %i", dc_yl, dc_yh, dc_x); 
-#endif 
+    if (!R_ClipColumnToView(0))
+	return;
+    count = dc_yh - dc_yl;
+    if (count < 0)
+	return;
 
     // Framebuffer destination address.
     // Use ylookup LUT to avoid multiply with ScreenWidth.
@@ -231,21 +250,14 @@ void R_DrawColumnLow (void)
     if (count < 0) 
 	return; 
 				 
-#ifdef RANGECHECK 
-    if ((unsigned)dc_x >= SCREENWIDTH
-	|| dc_yl < 0
-	|| dc_yh >= SCREENHEIGHT)
-    {
-	
-	I_Error ("R_DrawColumn: %i to %i at %i", dc_yl, dc_yh, dc_x);
-    }
-    //	dccount++; 
-#endif 
-    // Blocky mode, need to multiply by 2.
-    dc_x <<= 1;
-    
-    dest = ylookup[dc_yl] + columnofs[dc_x];
-    dest2 = ylookup[dc_yl] + columnofs[dc_x+1];
+    if (!R_ClipColumnToView(1))
+	return;
+    count = dc_yh - dc_yl;
+    if (count < 0)
+	return;
+    /* Do not assign back to dc_x: masked posts call this repeatedly. */
+    dest = ylookup[dc_yl] + columnofs[dc_x << 1];
+    dest2 = ylookup[dc_yl] + columnofs[(dc_x << 1) + 1];
     
     fracstep = dc_iscale; 
     frac = dc_texturemid + (dc_yl-centery)*fracstep;
@@ -312,16 +324,11 @@ void R_DrawFuzzColumn (void)
     if (count < 0) 
 	return; 
 
-    
-#ifdef RANGECHECK 
-    if ((unsigned)dc_x >= SCREENWIDTH
-	|| dc_yl < 0 || dc_yh >= SCREENHEIGHT)
-    {
-	I_Error ("R_DrawFuzzColumn: %i to %i at %i",
-		 dc_yl, dc_yh, dc_x);
-    }
-#endif
-
+    if (!R_ClipColumnToView(0))
+	return;
+    count = dc_yh - dc_yl;
+    if (count < 0)
+	return;
 
     // Keep till detailshift bug in blocky mode fixed,
     //  or blocky mode removed.
@@ -405,17 +412,11 @@ void R_DrawTranslatedColumn (void)
     if (count < 0) 
 	return; 
 				 
-#ifdef RANGECHECK 
-    if ((unsigned)dc_x >= SCREENWIDTH
-	|| dc_yl < 0
-	|| dc_yh >= SCREENHEIGHT)
-    {
-	I_Error ( "R_DrawColumn: %i to %i at %i",
-		  dc_yl, dc_yh, dc_x);
-    }
-    
-#endif 
-
+    if (!R_ClipColumnToView(0))
+	return;
+    count = dc_yh - dc_yl;
+    if (count < 0)
+	return;
 
     // WATCOM VGA specific.
     /* Keep for fixing.
@@ -544,12 +545,9 @@ void R_DrawSpan (void)
     if (ds_x2 < ds_x1
 	|| ds_x1<0
 	|| ds_x2>=SCREENWIDTH  
-	|| (unsigned)ds_y>SCREENHEIGHT)
-    {
-	I_Error( "R_DrawSpan: %i to %i at %i",
-		 ds_x1,ds_x2,ds_y);
-    }
-//	dscount++; 
+	|| (unsigned)ds_y >= (unsigned)viewheight
+	|| !ylookup[ds_y])
+	return;
 #endif 
 
     
@@ -667,25 +665,16 @@ void R_DrawSpanLow (void)
     if (ds_x2 < ds_x1
 	|| ds_x1<0
 	|| ds_x2>=SCREENWIDTH  
-	|| (unsigned)ds_y>SCREENHEIGHT)
-    {
-	I_Error( "R_DrawSpan: %i to %i at %i",
-		 ds_x1,ds_x2,ds_y);
-    }
-//	dscount++; 
+	|| (unsigned)ds_y >= (unsigned)viewheight
+	|| !ylookup[ds_y])
+	return;
 #endif 
 	 
     xfrac = ds_xfrac; 
     yfrac = ds_yfrac; 
 
-    // Blocky mode, need to multiply by 2.
-    ds_x1 <<= 1;
-    ds_x2 <<= 1;
-    
-    dest = ylookup[ds_y] + columnofs[ds_x1];
-  
-    
-    count = ds_x2 - ds_x1; 
+    dest = ylookup[ds_y] + columnofs[ds_x1 << 1];
+    count = (ds_x2 << 1) - (ds_x1 << 1); 
     do 
     { 
 	spot = ((yfrac>>(16-6))&(63*64)) + ((xfrac>>16)&63);

@@ -54,14 +54,14 @@ planefunction_t		ceilingfunc;
 //
 
 // Here comes the obnoxious "visplane".
-#define MAXVISPLANES	128
+#define MAXVISPLANES	512
 visplane_t		visplanes[MAXVISPLANES];
 visplane_t*		lastvisplane;
 visplane_t*		floorplane;
 visplane_t*		ceilingplane;
 
 // ?
-#define MAXOPENINGS	SCREENWIDTH*64
+#define MAXOPENINGS	(SCREENWIDTH*256)
 short			openings[MAXOPENINGS];
 short*			lastopening;
 
@@ -138,9 +138,7 @@ R_MapPlane
 	|| x1<0
 	|| x2>=viewwidth
 	|| (unsigned)y>viewheight)
-    {
-	I_Error ("R_MapPlane: %i, %i at %i",x1,x2,y);
-    }
+	return;
 #endif
 
     if (planeheight != cachedheight[y])
@@ -256,7 +254,7 @@ R_FindPlane
 	return check;
 		
     if (lastvisplane - visplanes == MAXVISPLANES)
-	I_Error ("R_FindPlane: no more visplanes");
+	return lastvisplane - 1;
 		
     lastvisplane++;
 
@@ -386,17 +384,10 @@ void R_DrawPlanes (void)
     int			angle;
 				
 #ifdef RANGECHECK
-    if (ds_p - drawsegs > MAXDRAWSEGS)
-	I_Error ("R_DrawPlanes: drawsegs overflow (%i)",
-		 ds_p - drawsegs);
-    
-    if (lastvisplane - visplanes > MAXVISPLANES)
-	I_Error ("R_DrawPlanes: visplane overflow (%i)",
-		 lastvisplane - visplanes);
-    
-    if (lastopening - openings > MAXOPENINGS)
-	I_Error ("R_DrawPlanes: opening overflow (%i)",
-		 lastopening - openings);
+    if (ds_p - drawsegs > MAXDRAWSEGS
+	|| lastvisplane - visplanes > MAXVISPLANES
+	|| lastopening - openings > MAXOPENINGS)
+	return;
 #endif
 
     for (pl = visplanes ; pl < lastvisplane ; pl++)
@@ -418,6 +409,8 @@ void R_DrawPlanes (void)
 	    dc_texturemid = skytexturemid;
 	    for (x=pl->minx ; x <= pl->maxx ; x++)
 	    {
+		if ((unsigned)x >= SCREENWIDTH)
+		    break;
 		dc_yl = pl->top[x];
 		dc_yh = pl->bottom[x];
 

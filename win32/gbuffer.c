@@ -128,13 +128,16 @@ static void gb_write_pixel(int x, int y, float z, float nx, float ny, float nz)
 void GB_WriteColumn(int x, int yl, int yh)
 {
     int y;
+    int y_limit = GB_HEIGHT - 1;
 
     if (x != gb_col_x)
 	return;
+    if (viewheight > 0 && viewheight < GB_HEIGHT)
+	y_limit = viewheight - 1;
     if (yl < 0)
 	yl = 0;
-    if (yh >= GB_HEIGHT)
-	yh = GB_HEIGHT - 1;
+    if (yh > y_limit)
+	yh = y_limit;
     for (y = yl; y <= yh; y++)
 	gb_write_pixel(x, y, gb_col_z, gb_col_nx, gb_col_ny, gb_col_nz);
 }
@@ -143,6 +146,8 @@ void GB_WriteSpan(int y, int x1, int x2, float z, float nx, float ny, float nz)
 {
     int x;
 
+    if (viewheight > 0 && viewheight < GB_HEIGHT && y >= viewheight)
+	return;
     if (x1 < 0)
 	x1 = 0;
     if (x2 >= GB_WIDTH)

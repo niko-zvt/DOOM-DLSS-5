@@ -661,7 +661,14 @@ R_SetViewSize
 {
     setsizeneeded = true;
     setblocks = blocks;
+#ifdef _WIN32
+    /* Low detail is marked N.A. in the menu; the cfg can still
+     * request it and R_DrawColumnLow then shifts dc_x per post. */
+    (void)detail;
+    setdetail = 0;
+#else
     setdetail = detail;
+#endif
 }
 
 

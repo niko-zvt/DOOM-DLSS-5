@@ -361,6 +361,9 @@ void R_DrawMaskedColumn (column_t* column)
     int		topscreen;
     int 	bottomscreen;
     fixed_t	basetexturemid;
+
+    if ((unsigned)dc_x >= SCREENWIDTH)
+	return;
 	
     basetexturemid = dc_texturemid;
 	
@@ -378,6 +381,10 @@ void R_DrawMaskedColumn (column_t* column)
 	    dc_yh = mfloorclip[dc_x]-1;
 	if (dc_yl <= mceilingclip[dc_x])
 	    dc_yl = mceilingclip[dc_x]+1;
+	if (dc_yh >= viewheight)
+	    dc_yh = viewheight - 1;
+	if (dc_yl < 0)
+	    dc_yl = 0;
 
 	if (dc_yl <= dc_yh)
 	{
@@ -484,10 +491,12 @@ R_DrawVisSprite
 	
     for (dc_x=vis->x1 ; dc_x<=vis->x2 ; dc_x++, frac += vis->xiscale)
     {
+	if ((unsigned)dc_x >= SCREENWIDTH)
+	    continue;
 	texturecolumn = frac>>FRACBITS;
 #ifdef RANGECHECK
 	if (texturecolumn < 0 || texturecolumn >= SHORT(patch->width))
-	    I_Error ("R_DrawSpriteRange: bad texturecolumn");
+	    continue;
 #endif
 	column = (column_t *) ((byte *)patch +
 			       LONG(patch->columnofs[texturecolumn]));

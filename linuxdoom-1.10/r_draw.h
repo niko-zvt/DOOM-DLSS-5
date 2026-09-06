@@ -92,7 +92,6 @@ R_InitBuffer
 ( int		width,
   int		height );
 
-
 // Initialize color translation tables,
 //  for player rendering etc.
 void	R_InitTranslationTables (void);

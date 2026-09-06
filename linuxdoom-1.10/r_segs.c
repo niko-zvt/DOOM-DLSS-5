@@ -182,6 +182,8 @@ R_RenderMaskedSegRange
     // draw the columns
     for (dc_x = x1 ; dc_x <= x2 ; dc_x++)
     {
+	if ((unsigned)dc_x >= SCREENWIDTH)
+	    break;
 	// calculate lighting
 	if (maskedtexturecol[dc_x] != MAXSHORT)
 	{
@@ -242,6 +244,8 @@ void R_RenderSegLoop (void)
 	
     for ( ; rw_x < rw_stopx ; rw_x++)
     {
+	if ((unsigned)rw_x >= SCREENWIDTH)
+	    break;
 	// mark floor / ceiling areas
 	yl = (topfrac+HEIGHTUNIT-1)>>HEIGHTBITS;
 
@@ -415,7 +419,7 @@ R_StoreWallRange
 		
 #ifdef RANGECHECK
     if (start >=viewwidth || start > stop)
-	I_Error ("Bad R_RenderWallRange: %i to %i", start , stop);
+	return;
 #endif
     
     sidedef = curline->sidedef;
