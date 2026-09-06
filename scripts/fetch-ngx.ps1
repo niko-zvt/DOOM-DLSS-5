@@ -84,25 +84,36 @@ if (Test-Path $Header) {
     Write-Host "Unpacked headers and libs."
 }
 
-$Dll = Get-ChildItem -Path $Dest -Recurse -Filter 'nvngx_dlss.dll' -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-$ExeDirs = @(
-    (Join-Path $Root 'build-win\Release\windoom-dlss'),
-    (Join-Path $Root 'build-win\Release\windoom-dlss5')
+$Dlls = @(
+    (Get-ChildItem -Path $Dest -Recurse -Filter 'nvngx_dlss.dll' -ErrorAction SilentlyContinue | Select-Object -First 1),
+    (Get-ChildItem -Path $Dest -Recurse -Filter 'nvngx_dlssd.dll' -ErrorAction SilentlyContinue | Select-Object -First 1)
 )
-if ($Dll) {
+$ExeDirs = @(
+    (Join-Path $Root 'build-win\Release\windoom-ngx-dlss3.5'),
+    (Join-Path $Root 'build-win\Release\windoom-ngx-dlss4'),
+    (Join-Path $Root 'build-win\Release\windoom-ngx-dlss4.5'),
+    (Join-Path $Root 'build-win\Release\windoom-ngx-dlss5')
+)
+$copiedAny = $false
+foreach ($dll in $Dlls) {
+    if (-not $dll) { continue }
     foreach ($dir in $ExeDirs) {
         if (Test-Path $dir) {
-            Copy-Item $Dll.FullName (Join-Path $dir $Dll.Name) -Force
-            Write-Host "Copied $($Dll.Name) -> $dir"
+            Copy-Item $dll.FullName (Join-Path $dir $dll.Name) -Force
+            Write-Host "Copied $($dll.Name) -> $dir"
+            $copiedAny = $true
         }
     }
-} else {
-    Write-Host "nvngx_dlss.dll not in this SDK tree; copy it next to windoom.exe later."
+}
+if (-not $copiedAny) {
+    Write-Host "nvngx_dlss.dll / nvngx_dlssd.dll not copied; stage folders first or copy next to windoom.exe later."
 }
 
 Write-Host ""
 Write-Host "Next:"
-Write-Host "  .\build.cmd --dlss-on"
-Write-Host "  .\build.cmd --dlss5"
+Write-Host "  .\build.cmd --ngx-dlss3.5"
+Write-Host "  .\build.cmd --ngx-dlss4"
+Write-Host "  .\build.cmd --ngx-dlss4.5"
+Write-Host "  .\build.cmd --ngx-dlss5"
+Write-Host "  .\build.cmd --all"
 Write-Host "CMake will pick up third_party\ngx automatically."

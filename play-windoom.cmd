@@ -14,23 +14,33 @@ if /I "%~1"=="--original" (
   shift
   goto parse
 )
-if /I "%~1"=="--dlss-on" (
-  set MODE=dlss
+if /I "%~1"=="--ngx-dlss3.5" (
+  set MODE=ngx-dlss3.5
   shift
   goto parse
 )
-if /I "%~1"=="--dlss" (
-  set MODE=dlss
+if /I "%~1"=="--ngx-dlss4" (
+  set MODE=ngx-dlss4
   shift
   goto parse
 )
-if /I "%~1"=="--dlss5" (
-  set MODE=dlss5
+if /I "%~1"=="--ngx-dlss4.5" (
+  set MODE=ngx-dlss4.5
+  shift
+  goto parse
+)
+if /I "%~1"=="--ngx-dlss5" (
+  set MODE=ngx-dlss5
   shift
   goto parse
 )
 if /I "%~1"=="--anime4k" (
   set MODE=anime4k
+  shift
+  goto parse
+)
+if /I "%~1"=="--fsr2" (
+  set MODE=fsr2
   shift
   goto parse
 )
@@ -43,9 +53,13 @@ set EXE=%~dp0build-win\Release\windoom-%MODE%\windoom.exe
 if not exist "%EXE%" (
   echo windoom.exe not found in windoom-%MODE%. Build first:
   echo   .\build.cmd
-  echo   .\build.cmd --dlss-on
-  echo   .\build.cmd --dlss5
+  echo   .\build.cmd --ngx-dlss3.5
+  echo   .\build.cmd --ngx-dlss4
+  echo   .\build.cmd --ngx-dlss4.5
+  echo   .\build.cmd --ngx-dlss5
   echo   .\build.cmd --anime4k
+  echo   .\build.cmd --fsr2
+  echo   .\build.cmd --all
   exit /b 1
 )
 
