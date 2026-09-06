@@ -31,6 +31,7 @@ rcsid[] = "$Id: st_stuff.c,v 1.6 1997/02/03 22:45:13 b1 Exp $";
 
 #include "i_system.h"
 #include "i_video.h"
+#include "v_video.h"
 #include "z_zone.h"
 #include "m_random.h"
 #include "w_wad.h"
@@ -1107,12 +1108,31 @@ void ST_diffDraw(void)
 
 void ST_Drawer (boolean fullscreen, boolean refresh)
 {
-  
-    st_statusbaron = (!fullscreen) || automapactive;
+    static boolean st_hud_was_on = true;
+    int y;
+
+    st_statusbaron = ((!fullscreen) || automapactive) && I_StatusBarVisible();
     st_firsttime = st_firsttime || refresh;
+    if (st_statusbaron && !st_hud_was_on)
+	st_firsttime = true;
+    st_hud_was_on = st_statusbaron;
 
     // Do red-/gold-shifts from damage/items
     ST_doPaletteStuff();
+
+    if (!st_statusbaron)
+    {
+	/* Do not clobber the 3D view at screenblocks 11. */
+	if ((automapactive || !fullscreen) && screens[0] && ST_Y > 0)
+	{
+	    byte *src = screens[0] + (ST_Y - 1) * SCREENWIDTH;
+
+	    for (y = 0; y < ST_HEIGHT; y++)
+		memcpy(screens[0] + (ST_Y + y) * SCREENWIDTH,
+		       src, SCREENWIDTH);
+	}
+	return;
+    }
 
     // If just after ST_Start(), refresh all
     if (st_firsttime) ST_doRefresh();

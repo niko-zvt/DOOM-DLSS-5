@@ -53,6 +53,9 @@ void I_ReadScreen (byte* scr);
 void I_BeginRead (void);
 void I_EndRead (void);
 
+/* 0 hides the status bar (Win32 Insert). Linux always returns 1. */
+int I_StatusBarVisible (void);
+
 
 
 #endif

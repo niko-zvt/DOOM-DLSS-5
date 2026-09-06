@@ -352,6 +352,11 @@ void I_UpdateNoBlit (void)
     // what is this?
 }
 
+int I_StatusBarVisible (void)
+{
+    return 1;
+}
+
 //
 // I_FinishUpdate
 //

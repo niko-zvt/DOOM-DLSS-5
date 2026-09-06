@@ -13,8 +13,8 @@ int  Ngx_Ready(void);
 int  Ngx_WantsHiRes(void);
 int  Ngx_ShowEvalOutput(void);
 int  Ngx_Evaluate(void *cmdlist,
-		  void *color, void *depth, void *velocity, void *output,
-		  int reset);
+		  void *color, void *depth, void *velocity, void *normal,
+		  void *output, int reset);
 
 #ifdef __cplusplus
 }

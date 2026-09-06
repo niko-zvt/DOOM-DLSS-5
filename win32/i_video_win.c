@@ -21,8 +21,10 @@
 #include "i_video.h"
 #include "v_video.h"
 #include "gbuffer.h"
+#include "m_argv.h"
 #include "ngx_dlss.h"
 #include "anime4k.h"
+#include "fsr2.h"
 
 extern int viewheight;
 
@@ -35,6 +37,8 @@ static HWND g_hwnd;
 static int g_mouse_grab;
 static int g_mouse_buttons;
 static int g_have_focus = 1;
+static int g_insert_down;
+static int g_insert_from_wnd;
 
 static ID3D12Device *g_dev;
 static ID3D12CommandQueue *g_queue;
@@ -141,6 +145,23 @@ static void post_mouse(int dx, int dy)
     D_PostEvent(&ev);
 }
 
+static int is_insert_key(WPARAM vk, LPARAM lparam)
+{
+    UINT sc = (UINT)((lparam >> 16) & 0xFF);
+
+    if (vk == VK_INSERT)
+	return 1;
+    /* Dedicated Insert is E0 52. Numpad 0 is 52 without the extended bit. */
+    if (sc == 0x52 && (lparam & (1 << 24)))
+	return 1;
+    return 0;
+}
+
+int I_StatusBarVisible(void)
+{
+    return GB_HudVisible();
+}
+
 static void grab_mouse(int grab)
 {
     RECT rc;
@@ -188,6 +209,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
 	if (wparam == VK_F2) { GB_SetDebugView(GB_VIEW_DEPTH); return 0; }
 	if (wparam == VK_F3) { GB_SetDebugView(GB_VIEW_NORMAL); return 0; }
 	if (wparam == VK_F4) { GB_SetDebugView(GB_VIEW_VELOCITY); return 0; }
+	if (is_insert_key(wparam, lparam))
+	{
+	    if (!(lparam & (1 << 30)))
+	    {
+		GB_ToggleHud();
+		g_insert_from_wnd = 1;
+	    }
+	    return 0;
+	}
 	if (!(lparam & (1 << 30)))
 	{
 	    ev.type = ev_keydown;
@@ -198,6 +228,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
       case WM_KEYUP:
       case WM_SYSKEYUP:
 	if (wparam >= VK_F1 && wparam <= VK_F4)
+	    return 0;
+	if (is_insert_key(wparam, lparam))
 	    return 0;
 	ev.type = ev_keyup;
 	ev.data1 = xlatekey(wparam);
@@ -888,6 +920,16 @@ void I_StartTic(void)
 	DispatchMessageA(&msg);
     }
 
+    {
+	int down = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
+
+	if (g_have_focus && down && !g_insert_down && !g_insert_from_wnd)
+	    GB_ToggleHud();
+	if (!down)
+	    g_insert_from_wnd = 0;
+	g_insert_down = down;
+    }
+
     if (g_hwnd && g_have_focus && g_mouse_grab)
     {
 	GetClientRect(g_hwnd, &rc);
@@ -916,6 +958,7 @@ void I_FinishUpdate(void)
     ID3D12CommandList *lists[1];
     int used_ngx = 0;
     int used_a4k = 0;
+    int used_fsr2 = 0;
     int reset;
 
     GB_ConvertColor(screens[0]);
@@ -968,9 +1011,13 @@ void I_FinishUpdate(void)
 	    barrier(g_tex_velocity_hi, &g_st_velocity_hi,
 		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
 		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	    barrier(g_tex_normal, &g_st_normal,
+		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	    barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 	    used_ngx = Ngx_Evaluate(g_cmd, g_tex_color_hi, g_tex_depth_hi,
-				    g_tex_velocity_hi, g_tex_out, reset);
+				    g_tex_velocity_hi, g_tex_normal, g_tex_out,
+				    reset);
 	}
 	else
 	{
@@ -983,16 +1030,38 @@ void I_FinishUpdate(void)
 	    barrier(g_tex_velocity, &g_st_velocity,
 		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
 		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	    barrier(g_tex_normal, &g_st_normal,
+		    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	    barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 	    used_ngx = Ngx_Evaluate(g_cmd, g_tex_color, g_tex_depth,
-				    g_tex_velocity, g_tex_out, reset);
+				    g_tex_velocity, g_tex_normal, g_tex_out,
+				    reset);
 	}
     }
 
     if (used_ngx && !Ngx_ShowEvalOutput())
 	used_ngx = 0;
 
-    if (!used_ngx && Anime4K_Ready() &&
+    if (!used_ngx && Fsr2_Ready() &&
+	GB_GetDebugView() == GB_VIEW_COLOR &&
+	GB_HasScenePixels())
+    {
+	barrier(g_tex_color, &g_st_color,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	barrier(g_tex_depth, &g_st_depth,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	barrier(g_tex_velocity, &g_st_velocity,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	used_fsr2 = Fsr2_Evaluate(g_cmd, g_tex_color, g_tex_depth,
+				  g_tex_velocity, g_tex_out, reset);
+    }
+
+    if (!used_ngx && !used_fsr2 && Anime4K_Ready() &&
 	GB_GetDebugView() == GB_VIEW_COLOR)
     {
 	barrier(g_tex_color, &g_st_color,
@@ -1001,18 +1070,19 @@ void I_FinishUpdate(void)
 	used_a4k = Anime4K_Evaluate(g_cmd, g_tex_color, g_tex_out);
     }
 
-    if (used_ngx || used_a4k)
+    if (used_ngx || used_a4k || used_fsr2)
     {
 	int hud_y = (SCREENHEIGHT - 32) * WIN_SCALE;
 
 	uav_barrier(g_tex_out);
 	barrier(g_tex_out, &g_st_out, D3D12_RESOURCE_STATE_COPY_SOURCE);
 	barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_COPY_DEST);
-	if (hud_y > 0 && hud_y < WIN_H)
+	if (GB_HudVisible() && hud_y > 0 && hud_y < WIN_H)
 	    copy_tex_rows(g_tex_out, g_bb[idx], 0, (UINT)hud_y);
 	else
 	    copy_tex_to_tex(g_tex_out, g_bb[idx]);
-	blit_statusbar(g_bb[idx]);
+	if (GB_HudVisible())
+	    blit_statusbar(g_bb[idx]);
     }
     else
     {
@@ -1020,7 +1090,8 @@ void I_FinishUpdate(void)
 	barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_COPY_DEST);
 	upload_tex(g_bb[idx], g_up_present, g_present,
 		   WIN_W, WIN_H, 4, DXGI_FORMAT_B8G8R8A8_UNORM);
-	blit_statusbar(g_bb[idx]);
+	if (GB_HudVisible())
+	    blit_statusbar(g_bb[idx]);
     }
 
     barrier(g_bb[idx], &g_bb_state[idx], D3D12_RESOURCE_STATE_PRESENT);
@@ -1059,6 +1130,7 @@ void I_ShutdownGraphics(void)
     grab_mouse(0);
     wait_gpu();
     Anime4K_Shutdown();
+    Fsr2_Shutdown();
     Ngx_Shutdown();
     if (g_readback) ID3D12Resource_Release(g_readback);
     if (g_up_present) ID3D12Resource_Release(g_up_present);
@@ -1113,6 +1185,14 @@ void I_InitGraphics(void)
     DWORD style;
 
     GB_Init();
+    if (M_CheckParm("-depth"))
+	GB_SetDebugView(GB_VIEW_DEPTH);
+    else if (M_CheckParm("-normal"))
+	GB_SetDebugView(GB_VIEW_NORMAL);
+    else if (M_CheckParm("-velocity"))
+	GB_SetDebugView(GB_VIEW_VELOCITY);
+    else if (M_CheckParm("-color"))
+	GB_SetDebugView(GB_VIEW_COLOR);
 
     memset(&wc, 0, sizeof(wc));
     wc.lpfnWndProc = WndProc;
@@ -1140,7 +1220,9 @@ void I_InitGraphics(void)
 	Ngx_Init(g_dev, g_queue);
     if (Ngx_WantsHiRes() && !init_hi_res())
 	I_Error("NGX hi-res G-buffers failed");
-    if (!Ngx_Ready())
+    if (!Ngx_Ready() && Fsr2_Wanted())
+	Fsr2_Init(g_dev);
+    if (!Ngx_Ready() && !Fsr2_Ready())
 	Anime4K_Init(g_dev);
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
@@ -1149,6 +1231,8 @@ void I_InitGraphics(void)
 	    WIN_W, WIN_H, SCREENWIDTH, SCREENHEIGHT);
     if (Anime4K_Ready())
 	fprintf(stderr, "present mode: anime4k-fast\n");
+    else if (Fsr2_Ready())
+	fprintf(stderr, "present mode: fsr2\n");
     else if (Ngx_WantsHiRes())
 	fprintf(stderr, "present mode: dlss5-dlaa\n");
     else if (Ngx_Ready())
