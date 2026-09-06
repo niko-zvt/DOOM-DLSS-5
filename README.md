@@ -72,6 +72,12 @@ forces nearest even when NGX is built in.
 records / plays a demo on the depth debug view (nearest compose).
 F1–F4 still switch the same views at runtime.
 
+    .\screencast-windoom.cmd
+
+runs that queue for a desktop recording: all present modes in
+`-color`, then `--original` in `-depth` / `-normal` / `-velocity`.
+Needs `.\build.cmd --all` and `compare.lmp` in `build-win\Release`.
+
 ## DLSS5-Swapper
 
 Add `build-win\Release\windoom-ngx-dlss5` (not the Release root).
