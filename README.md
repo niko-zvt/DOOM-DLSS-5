@@ -1,8 +1,13 @@
-# WinDoom
+# DOOM + DLSS 5
 
 Windows x64 port of Linux DOOM 1.10. The game still draws 320x200;
-the window is 1280x800 (D3D12). Each frame also writes depth, normals,
-and motion.
+the window is 1280x800 (D3D12). Each frame also writes depth, normals, and motion.
+
+[YouTube Demo - Link](https://www.youtube.com/watch?v=KFZ5NHp2Wj0)
+
+| | | |
+|:---:|:---:|:---:|
+| ![DLSS 5, tech base](docs/dlss5-corridor.png) | ![DLSS 5, imp](docs/dlss5-imp.png) | ![DLSS 5, stairs](docs/dlss5-stairs.png) |
 
 Copyright (C) 2026 Nikolai Zhivotenko. GPLv2, see LICENSE.TXT.
 Original game code: id Software, 1993-1996. Carmack's note: README.TXT.
